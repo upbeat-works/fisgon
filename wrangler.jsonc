@@ -1,0 +1,17 @@
+{
+  "name": "fisgon-agent",
+  "main": "src/agent/worker.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "FISGON_AGENT", "class_name": "FisgonAgent" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["FisgonAgent"] }
+  ],
+  "browser": {
+    "binding": "BROWSER"
+  }
+}

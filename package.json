@@ -1,0 +1,54 @@
+{
+  "name": "fisgon",
+  "version": "0.1.0",
+  "description": "Low-level primitives for LLM-driven application testing",
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js",
+    "./server": "./dist/server.js",
+    "./adapters/drizzle": "./dist/adapters/drizzle.js",
+    "./adapters/prisma": "./dist/adapters/prisma.js"
+  },
+  "bin": {
+    "fisgon": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc && cp -r src/probes/scripts dist/probes/scripts",
+    "dev": "tsc --watch",
+    "lint": "eslint .",
+    "format": "prettier --write ."
+  },
+  "dependencies": {
+    "agents": "^0.3.10",
+    "commander": "^13.1.0",
+    "picomatch": "^4.0.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250124.0",
+    "@epic-web/config": "^1.22.0",
+    "@types/node": "^22.12.0",
+    "@types/picomatch": "^3.0.2",
+    "@types/ws": "^8.5.13",
+    "eslint": "^9.39.2",
+    "prettier": "^3.8.1",
+    "typescript": "^5.7.3",
+    "wrangler": "^4.4.0"
+  },
+  "peerDependencies": {
+    "@prisma/client": ">=5.0.0",
+    "drizzle-orm": ">=0.30.0"
+  },
+  "peerDependenciesMeta": {
+    "drizzle-orm": {
+      "optional": true
+    },
+    "@prisma/client": {
+      "optional": true
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "license": "MIT"
+}
