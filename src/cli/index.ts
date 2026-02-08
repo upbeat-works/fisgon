@@ -7,6 +7,7 @@ import { eventsCommand } from './commands/events.js'
 import { interactCommand } from './commands/interact.js'
 import { navigateCommand } from './commands/navigate.js'
 import { openCommand } from './commands/open.js'
+import { runCommand } from './commands/run.js'
 import { startCommand } from './commands/start.js'
 import { stopCommand } from './commands/stop.js'
 import { tickCommand } from './commands/tick.js'
@@ -27,5 +28,6 @@ program.addCommand(interactCommand)
 program.addCommand(tickCommand)
 program.addCommand(eventsCommand)
 program.addCommand(doCommand)
+program.addCommand(runCommand)
 
 program.parse()

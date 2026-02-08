@@ -1,5 +1,6 @@
 import { Agent, callable, getCurrentAgent, type Connection, type WSMessage } from 'agents'
 
+import { type TaskFile } from '../core/task-file.js'
 import { TickDetector } from '../core/tick-detector.js'
 import {
 	type ProbeEvent,
@@ -12,7 +13,7 @@ import {
 } from '../core/types.js'
 
 import { type BrowserCommand, type BrowserResult } from './browser-bridge.js'
-import { type TaskContext, runTask } from './llm-driver.js'
+import { type TaskContext, type StepLog, runTask, distillSteps } from './llm-driver.js'
 import { type AgentState, type SessionRow, type EventRow, type TickRow, initialAgentState } from './session-state.js'
 
 type ConnectionState = {
@@ -304,6 +305,20 @@ export class FisgonAgent extends Agent<Cloudflare.Env, AgentState> {
 		const result = await runTask(ctx, instruction)
 
 		return { result }
+	}
+
+	@callable()
+	async distillTask(
+		sessionId: string,
+		stepLogs: StepLog[],
+		instruction: string,
+		finalUrl: string,
+	): Promise<{ task: TaskFile }> {
+		this.initDb()
+		// Verify session exists
+		this.requireRuntime(sessionId)
+		const task = await distillSteps(stepLogs, instruction, finalUrl)
+		return { task }
 	}
 
 	@callable()

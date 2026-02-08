@@ -1,14 +1,19 @@
-import { generateText, tool, stepCountIs } from 'ai'
+import { generateText, Output, tool, stepCountIs } from 'ai'
 import { z } from 'zod'
 
+import { type TaskFile } from '../core/task-file.js'
 import { type Action, type InteractCommand, type ProbeEvent, type Tick } from '../core/types.js'
-import { model } from './ai.js'
+import { model, structuredModel } from './ai.js'
 
 // Context object — avoids exposing private agent internals directly.
 // The agent constructs this from its own internal methods + session runtime.
 export type StepLog = {
 	step: number
-	toolCalls: Array<{ name: string; args: Record<string, unknown> }>
+	toolCalls: Array<{
+		name: string
+		args: Record<string, unknown>
+		result?: unknown
+	}>
 	text?: string
 }
 
@@ -168,9 +173,10 @@ export async function runTask(
 			stepNumber++
 			ctx.onStepLog?.({
 				step: stepNumber,
-				toolCalls: step.toolCalls.map((tc) => ({
+				toolCalls: step.toolCalls.map((tc, i) => ({
 					name: tc.toolName,
 					args: tc.input as Record<string, unknown>,
+					result: step.toolResults[i]?.output,
 				})),
 				text: step.text || undefined,
 			})
@@ -178,4 +184,77 @@ export async function runTask(
 	})
 
 	return result.text
+}
+
+const DISTILL_PROMPT = `You are analyzing a browser automation trace. Given the full sequence of tool calls and their results, distill it into a clean, minimal task file that can be replayed deterministically.
+
+## Rules
+
+1. **Only keep steps that change state**: \`navigate\`, \`interact\`, and \`wait_for_tick\`.
+   - REMOVE all \`get_actions\`, \`open_action\`, and \`get_events\` calls — they are read-only discovery steps the LLM used to explore the page. They are not needed for replay.
+2. **Keep every interact step that matters** — clicks that switch views, type into fields, or submit forms. Look at the trace carefully: if a click changed the page (the next get_actions returned different results), it must be included.
+3. **Remove missteps**: failed clicks (errors in result), redundant retries, and steps that didn't contribute to the goal.
+4. **Use stable CSS selectors** — never use \`data-fisgon\` attributes (they are dynamically assigned and change between sessions). Never use \`:contains()\` (not valid CSS). Prefer: \`button[type="submit"]\`, \`input[name="email"]\`, \`a[href="..."]\`, \`role\` attributes, or \`nth-of-type\`. For text matching use Playwright's \`:has-text("...")\` pseudo-selector (e.g. \`button:has-text("Log In")\`).
+5. **Parameterize dynamic values**: emails, passwords, URLs that vary. Replace with \`{{paramName}}\` placeholders and list defaults in \`params\`.
+6. **Extract dynamic values** from step results: for values that are only known at runtime (like magic link URLs from email events), add \`extract\` on the step that produces them. The extract object maps variable names to expressions. Example: \`{"callbackUrl": "events[source=email].data.text | match(/http\\\\S+callback\\\\S+/)"}\`. The variable can then be used as \`{{callbackUrl}}\` in later steps.
+7. **Add validation** based on the final state (typically url_contains).
+
+## Output schema
+
+- name: short kebab-case identifier
+- description: what this task does
+- params: object of param names to default values (null if none)
+- steps: array of {tool, args, extract} — only navigate, interact, wait_for_tick
+- validate: {url_contains, url_matches, event_exists} (null fields for unused)
+
+Tool args:
+- interact: {action: "click"|"type"|"select", selector: string, value?: string}
+- navigate: {url: string}
+- wait_for_tick: {timeout?: string}`
+
+const taskFileSchema = z.object({
+	name: z.string(),
+	description: z.string(),
+	params: z.record(z.string()).nullable(),
+	steps: z.array(z.object({
+		tool: z.string(),
+		args: z.record(z.string()).nullable(),
+		extract: z.record(z.string()).nullable(),
+	})),
+	validate: z.object({
+		url_contains: z.string().nullable(),
+		url_matches: z.string().nullable(),
+		event_exists: z.object({
+			source: z.string(),
+			type: z.string(),
+		}).nullable(),
+	}).nullable(),
+})
+
+export async function distillSteps(
+	stepLogs: StepLog[],
+	instruction: string,
+	finalUrl: string,
+): Promise<TaskFile> {
+	const trace = stepLogs.map((log) =>
+		log.toolCalls.map((tc) => ({
+			tool: tc.name,
+			args: tc.args,
+			result: tc.result,
+		})),
+	).flat()
+
+	const result = await generateText({
+		model: structuredModel,
+		output: Output.object({ schema: taskFileSchema }),
+		system: DISTILL_PROMPT,
+		prompt: [
+			`Instruction: ${instruction}`,
+			`Final browser URL: ${finalUrl}`,
+			`\nFull trace (${trace.length} tool calls):`,
+			JSON.stringify(trace, null, 2),
+		].join('\n'),
+	})
+
+	return result.output as TaskFile
 }
