@@ -6,12 +6,20 @@ import { model } from './ai.js'
 
 // Context object — avoids exposing private agent internals directly.
 // The agent constructs this from its own internal methods + session runtime.
+export type StepLog = {
+	step: number
+	toolCalls: Array<{ name: string; args: Record<string, unknown> }>
+	text?: string
+}
+
 export type TaskContext = {
 	sendBrowserCommand: (command: unknown) => Promise<unknown>
 	waitForTick: (timeoutMs: number) => Promise<Tick>
 	getEvents: () => ProbeEvent[]
+	onStepLog?: (log: StepLog) => void
 	appUrl: string
 	loginUrl?: string
+	currentUrl?: string
 }
 
 const SYSTEM_PROMPT = `You are a browser automation agent. You control a real browser and can observe both client-side and server-side events.
@@ -28,17 +36,21 @@ After performing an action (clicking submit, navigating), call \`wait_for_tick\`
 
 ## Strategy
 
-1. Use \`get_actions\` to discover available interactive elements on the page (forms, links, buttons)
-2. Use \`open_action\` to inspect a specific element's HTML and understand its fields
-3. Use \`interact\` to fill fields, click buttons, or select options
-4. Use \`wait_for_tick\` after actions to see what happened (including server-side effects)
-5. Use \`navigate\` to go to specific URLs
+You are a USER of the application. Navigate it the way a user would — by looking at the page and clicking links, buttons, and menus.
+
+1. Use \`get_actions\` to discover what's on the current page (links, buttons, forms, nav items)
+2. Use \`open_action\` to inspect an element's HTML if you need more detail
+3. Use \`interact\` to click links, fill forms, press buttons — it returns the resulting events automatically
+4. Use \`navigate\` ONLY for exact URLs you already know (e.g. a callback URL from an email event). Never guess URLs.
+5. Use \`wait_for_tick\` only when you need to wait for delayed events (e.g. after a page load that triggers background work)
 6. Use \`get_events\` to review the full event history if needed
+
+**Always start by calling \`get_actions\` to see what's available on the page**, then follow links/buttons to reach your destination. Do NOT construct or guess URLs — find them in the UI.
 
 ## Important
 
-- Discover elements with \`get_actions\` — do NOT guess CSS selectors
-- After interacting with a form, always \`wait_for_tick\` to see the result
+- Discover elements with \`get_actions\` — do NOT guess CSS selectors or URLs
+- Both \`interact\` and \`navigate\` return the tick with all events — no need to call \`wait_for_tick\` after them
 - Server events can reveal things not visible in the browser: magic link URLs in emails, session tokens, SQL operations
 - If a login flow sends a magic link email, the email content appears as a server probe event — extract the URL and navigate to it
 - Keep going until the instruction is fully accomplished, then respond with a summary of what you did`
@@ -84,9 +96,9 @@ function createTools(ctx: TaskContext) {
 			},
 		}),
 
-		interact: tool<{ action: 'type' | 'click' | 'select'; selector: string; value?: string }, string>({
+		interact: tool<{ action: 'type' | 'click' | 'select'; selector: string; value?: string }, Tick>({
 			description:
-				'Type text, click, or select an option in the browser. Use CSS selectors from open_action results.',
+				'Type text, click, or select an option in the browser. Use CSS selectors from open_action results. Returns the tick with all events that fired as a result.',
 			inputSchema: z.object({
 				action: z.enum(['type', 'click', 'select']).describe('The interaction type'),
 				selector: z.string().describe('CSS selector for the target element'),
@@ -108,7 +120,7 @@ function createTools(ctx: TaskContext) {
 					type: 'browser-interact',
 					command,
 				})
-				return 'ok'
+				return ctx.waitForTick(10000)
 			},
 		}),
 
@@ -143,13 +155,26 @@ export async function runTask(
 ): Promise<string> {
 	const appContext = [`App URL: ${ctx.appUrl}`]
 	if (ctx.loginUrl) appContext.push(`Login URL: ${ctx.loginUrl}`)
+	if (ctx.currentUrl) appContext.push(`Current browser URL: ${ctx.currentUrl} — the browser is already here, do NOT navigate away unless the instruction requires it`)
 
+	let stepNumber = 0
 	const result = await generateText({
 		model,
 		system: SYSTEM_PROMPT + `\n\n## App context\n\n${appContext.join('\n')}`,
 		prompt: instruction,
 		tools: createTools(ctx),
 		stopWhen: stepCountIs(30),
+		onStepFinish(step) {
+			stepNumber++
+			ctx.onStepLog?.({
+				step: stepNumber,
+				toolCalls: step.toolCalls.map((tc) => ({
+					name: tc.toolName,
+					args: tc.input as Record<string, unknown>,
+				})),
+				text: step.text || undefined,
+			})
+		},
 	})
 
 	return result.text

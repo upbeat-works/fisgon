@@ -275,7 +275,7 @@ export class FisgonAgent extends Agent<Cloudflare.Env, AgentState> {
 				'(e.g. magic links — the email content will appear as a probe event).',
 			].join(' ')
 
-			const ctx = this.createTaskContext(runtime, sessionId)
+			const ctx = await this.createTaskContext(runtime, sessionId)
 			await runTask(ctx, instruction)
 
 			// Return the last tick after the LLM is done
@@ -300,7 +300,7 @@ export class FisgonAgent extends Agent<Cloudflare.Env, AgentState> {
 		this.initDb()
 
 		const runtime = this.requireRuntime(sessionId)
-		const ctx = this.createTaskContext(runtime, sessionId)
+		const ctx = await this.createTaskContext(runtime, sessionId)
 		const result = await runTask(ctx, instruction)
 
 		return { result }
@@ -505,17 +505,38 @@ export class FisgonAgent extends Agent<Cloudflare.Env, AgentState> {
 
 	// ── Helpers ─────────────────────────────────────────────────
 
-	private createTaskContext(runtime: SessionRuntime, sessionId: string): TaskContext {
+	private async createTaskContext(runtime: SessionRuntime, sessionId: string): Promise<TaskContext> {
 		const [session] = this.sql<SessionRow>`SELECT config FROM sessions WHERE id = ${sessionId}`
 		const config: FisgonConfig = JSON.parse(session.config)
+
+		// Get current browser URL so the LLM knows where it already is
+		let currentUrl: string | undefined
+		try {
+			currentUrl = await this.sendBrowserCommand(runtime, {
+				type: 'browser-evaluate',
+				script: 'window.location.href',
+			}) as string
+		} catch {
+			// Browser may not be ready yet
+		}
 
 		return {
 			sendBrowserCommand: (command) =>
 				this.sendBrowserCommand(runtime, command as BrowserCommand),
 			waitForTick: (timeoutMs) => this.waitForTick(runtime, timeoutMs),
 			getEvents: () => this.getEvents(sessionId).events,
+			onStepLog: (log) => {
+				const msg = JSON.stringify({ type: 'task-step', sessionId, ...log })
+				for (const conn of this.getConnections()) {
+					const state = conn.state as ConnectionState | undefined
+					if (state?.role === 'cli' && state.sessionId === sessionId) {
+						conn.send(msg)
+					}
+				}
+			},
 			appUrl: config.url,
 			loginUrl: config.loginUrl,
+			currentUrl,
 		}
 	}
 

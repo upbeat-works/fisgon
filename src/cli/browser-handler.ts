@@ -9,7 +9,7 @@ export type PlaywrightPage = {
 	goto(url: string, options?: { waitUntil?: string }): Promise<unknown>
 	evaluate<T>(fn: string | (() => T)): Promise<T>
 	addInitScript(script: string): Promise<void>
-	type(selector: string, text: string): Promise<void>
+	fill(selector: string, value: string): Promise<void>
 	click(selector: string): Promise<void>
 	selectOption(selector: string, value: string): Promise<unknown>
 	waitForLoadState(state?: string): Promise<void>
@@ -92,7 +92,7 @@ export function createBrowserHandler(sender: Sendable, page: PlaywrightPage) {
 					const cmd = command.command as InteractCommand
 					switch (cmd.action) {
 						case 'type':
-							await page.type(cmd.selector, cmd.value)
+							await page.fill(cmd.selector, cmd.value)
 							break
 						case 'click':
 							await page.click(cmd.selector)
