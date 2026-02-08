@@ -6,11 +6,8 @@ import { resolve, join } from 'node:path'
 import { Command } from 'commander'
 
 import { type IdentityConfig } from '../../core/types.js'
-import { createInjectableScript } from '../../probes/inject.js'
-import {
-	createBrowserHandler,
-	type PlaywrightBrowser,
-} from '../browser-handler.js'
+import { createBrowserHandler } from '../browser-handler.js'
+import { launchBrowser } from '../browser-setup.js'
 import { loadConfig } from '../config.js'
 import { connectToAgent } from '../connection.js'
 
@@ -171,30 +168,7 @@ export const startCommand = new Command('start')
 		// 4. Launch local Playwright browser if in local browser mode
 		if (browserMode === 'local' && options.browser !== false) {
 			try {
-				const pw = (await import('playwright')) as {
-					chromium: {
-						launch(opts: {
-							headless: boolean
-						}): Promise<PlaywrightBrowser>
-					}
-				}
-				const browser = await pw.chromium.launch({ headless: false })
-				const page = await browser.newPage()
-				const targetUrl = new URL(config.url)
-
-				// Set fisgon cookie
-				await page.context().addCookies([
-					{
-						name: 'fisgon',
-						value: sessionId,
-						domain: targetUrl.hostname,
-						path: '/',
-					},
-				])
-
-				// Inject browser probes (fetch, navigation, WS bootstrap)
-				const probeScript = createInjectableScript(config, sessionId)
-				await page.addInitScript(probeScript)
+				const { page } = await launchBrowser(config, sessionId)
 
 				// Register browser command handler — sends results via AgentClient
 				const handleBrowserCommand = createBrowserHandler(conn.client, page)

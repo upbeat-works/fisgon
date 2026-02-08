@@ -1,9 +1,11 @@
 import { type TaskFile } from '../core/task-file.js'
+import { type PlaywrightPage } from './browser-handler.js'
 import { type AgentConnection } from './connection.js'
 
 type ReplayOptions = {
 	fallback?: boolean
 	verbose?: boolean
+	page?: PlaywrightPage
 }
 
 type ReplayResult = {
@@ -130,20 +132,48 @@ async function executeStep(
 	tool: string,
 	args: Record<string, unknown>,
 	hasExtract: boolean,
+	page?: PlaywrightPage,
 ): Promise<unknown> {
 	switch (tool) {
-		case 'navigate':
+		case 'navigate': {
+			if (page) {
+				await page.goto(args.url as string, { waitUntil: 'networkidle' })
+				// Wait for probe events from the navigation
+				try {
+					return await conn.call('waitForNextTick', [sessionId, 5000], { timeout: 15000 })
+				} catch {
+					if (hasExtract) throw new Error('Tick timed out (needed for extract)')
+					return null
+				}
+			}
 			return conn.call('navigate', [sessionId, args.url as string], { timeout: 30000 })
+		}
 		case 'get_actions':
 			return conn.call('getActions', [sessionId], { timeout: 30000 })
 		case 'open_action':
 			return conn.call('openAction', [sessionId, args.actionId as string], { timeout: 30000 })
 		case 'interact': {
-			await conn.call('interact', [sessionId, {
-				action: args.action as string,
-				selector: args.selector as string,
-				...(args.value != null ? { value: args.value } : {}),
-			}], { timeout: 30000 })
+			if (page) {
+				const action = args.action as string
+				const selector = args.selector as string
+				switch (action) {
+					case 'type':
+						await page.fill(selector, args.value as string)
+						break
+					case 'click':
+						await page.click(selector)
+						break
+					case 'select':
+						await page.selectOption(selector, args.value as string)
+						break
+				}
+			} else {
+				await conn.call('interact', [sessionId, {
+					action: args.action as string,
+					selector: args.selector as string,
+					...(args.value != null ? { value: args.value } : {}),
+				}], { timeout: 30000 })
+			}
 			// Wait for tick but tolerate timeout — some interactions (typing)
 			// don't generate probe events. Only fail if we need extract data.
 			try {
@@ -240,7 +270,7 @@ export async function replayTask(
 
 		let result: unknown
 		try {
-			result = await executeStep(conn, sessionId, step.tool, resolvedArgs, !!step.extract)
+			result = await executeStep(conn, sessionId, step.tool, resolvedArgs, !!step.extract, options.page)
 		} catch (err) {
 			if (options.fallback) {
 				if (options.verbose) {

@@ -1,17 +1,76 @@
+import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
+
 import { Command } from 'commander'
 
 import { readTaskFile, readCaseFile, listTasks, listCases } from '../../core/task-file.js'
-import { connectToAgent } from '../connection.js'
+import { launchBrowser, type BrowserSession } from '../browser-setup.js'
+import { loadConfig } from '../config.js'
+import { connectToAgent, type AgentConnection } from '../connection.js'
 import { getRunningSession } from '../session-file.js'
 import { replayTask } from '../task-runner.js'
+
+function startWrangler(port: number): Promise<ChildProcess> {
+	return new Promise((resolve_, reject) => {
+		const fisgonRoot = resolve(import.meta.dirname, '../../..')
+		const wranglerConfigPath = resolve(fisgonRoot, 'wrangler.jsonc')
+		const devVarsPath = resolve(fisgonRoot, '.dev.vars')
+
+		const wranglerArgs = [
+			'wrangler',
+			'dev',
+			'--config',
+			wranglerConfigPath,
+			'--port',
+			String(port),
+		]
+
+		if (existsSync(devVarsPath)) {
+			wranglerArgs.push('--env-file', devVarsPath)
+		}
+
+		const wrangler = spawn('npx', wranglerArgs, {
+			stdio: ['pipe', 'pipe', 'pipe'],
+			env: { ...process.env },
+		})
+
+		const timeout = setTimeout(
+			() => reject(new Error('Wrangler startup timed out')),
+			30000,
+		)
+
+		const onReady = (data: Buffer) => {
+			if (data.toString().includes('Ready on')) {
+				clearTimeout(timeout)
+				resolve_(wrangler)
+			}
+		}
+
+		wrangler.stderr?.on('data', onReady)
+		wrangler.stdout?.on('data', onReady)
+
+		wrangler.on('error', (err) => {
+			clearTimeout(timeout)
+			reject(err)
+		})
+
+		wrangler.on('exit', (code) => {
+			clearTimeout(timeout)
+			if (code !== 0) reject(new Error(`Wrangler exited with code ${code}`))
+		})
+	})
+}
 
 export const runCommand = new Command('run')
 	.description('Replay a saved task or test case')
 	.argument('<name>', 'Task or test case name')
 	.option('--fallback', 'Fall back to LLM if a step fails')
 	.option('--verbose', 'Print each step as it executes')
+	.option('--headless', 'Run browser without visible window')
 	.option('--list', 'List all saved tasks and cases')
-	.action(async (name: string, opts: { fallback?: boolean; verbose?: boolean; list?: boolean }) => {
+	.option('-p, --port <port>', 'Agent port (local mode)', '9876')
+	.action(async (name: string, opts: { fallback?: boolean; verbose?: boolean; headless?: boolean; list?: boolean; port: string }) => {
 		if (opts.list) {
 			const tasks = listTasks(process.cwd())
 			const cases = listCases(process.cwd())
@@ -29,21 +88,87 @@ export const runCommand = new Command('run')
 			return
 		}
 
-		const session = getRunningSession()
-		if (!session) {
-			console.error('No running Fisgon session. Run `fisgon start` first.')
+		const config = await loadConfig()
+		if (!config) {
+			console.error('No fisgon.config.ts found in current directory')
 			process.exit(1)
 		}
 
-		try {
-			const conn = await connectToAgent({
-				port: session.port,
-				agent: session.agent,
-				env: session.env,
-				sessionId: session.sessionId,
-			})
+		let wrangler: ChildProcess | null = null
+		let conn: AgentConnection | null = null
+		let browserSession: BrowserSession | null = null
 
-			// Try task first, then case
+		const cleanup = async () => {
+			await browserSession?.cleanup()
+			conn?.close()
+			wrangler?.kill()
+		}
+
+		process.on('SIGINT', () => void cleanup().then(() => process.exit(0)))
+		process.on('SIGTERM', () => void cleanup().then(() => process.exit(0)))
+
+		try {
+			// 1. Connect to an existing session or start wrangler ourselves
+			const existingSession = getRunningSession()
+			const agentUrl = config.agent
+			const isRemote = !!agentUrl
+			const port = config.port ?? parseInt(opts.port, 10)
+
+			let sessionId: string
+
+			if (existingSession) {
+				// Reuse existing wrangler/session — just connect
+				if (opts.verbose) console.log('Using existing Fisgon session...')
+				conn = await connectToAgent({
+					port: existingSession.port,
+					agent: existingSession.agent,
+					env: existingSession.env,
+					sessionId: existingSession.sessionId,
+				})
+				sessionId = existingSession.sessionId
+			} else {
+				// No existing session — start wrangler and create a new session
+				if (!isRemote) {
+					if (opts.verbose) console.log('Starting Fisgon agent...')
+					wrangler = await startWrangler(port)
+					if (opts.verbose) console.log(`Agent running on port ${port}`)
+					// Give wrangler a moment to be fully ready
+					await new Promise((r) => setTimeout(r, 1000))
+				}
+
+				conn = await connectToAgent({
+					port: isRemote ? undefined : port,
+					agent: agentUrl,
+					env: 'default',
+				})
+
+				const startResult = await conn.call<{ sessionId: string }>(
+					'startSession',
+					[config, 'local'],
+				)
+				sessionId = startResult.sessionId
+				if (opts.verbose) console.log(`Session started: ${sessionId}`)
+
+				// Reconnect with sessionId
+				conn.close()
+				conn = await connectToAgent({
+					port: isRemote ? undefined : port,
+					agent: agentUrl,
+					env: 'default',
+					sessionId,
+				})
+			}
+
+			// 2. Launch browser
+			const headless = !!opts.headless
+			if (opts.verbose) console.log(`Launching browser (${headless ? 'headless' : 'headed'})...`)
+			browserSession = await launchBrowser(config, sessionId, { headless })
+			if (opts.verbose) console.log('Browser ready')
+
+			// 3. Navigate to app URL
+			await browserSession.page.goto(config.url, { waitUntil: 'networkidle' })
+
+			// 4. Run tasks
 			const task = readTaskFile(process.cwd(), name)
 			if (task) {
 				console.log(`Running task: ${task.name}`)
@@ -52,10 +177,10 @@ export const runCommand = new Command('run')
 
 				const result = await replayTask(
 					conn,
-					session.sessionId,
+					sessionId,
 					task,
 					{},
-					{ fallback: opts.fallback, verbose: opts.verbose ?? true },
+					{ fallback: opts.fallback, verbose: opts.verbose ?? true, page: browserSession.page },
 				)
 
 				console.log()
@@ -63,11 +188,11 @@ export const runCommand = new Command('run')
 					console.log('Task completed successfully.')
 				} else {
 					console.error(`Task failed: ${result.error}`)
-					conn.close()
+					await cleanup()
 					process.exit(1)
 				}
 
-				conn.close()
+				await cleanup()
 				return
 			}
 
@@ -82,7 +207,7 @@ export const runCommand = new Command('run')
 					const taskFile = readTaskFile(process.cwd(), taskName)
 					if (!taskFile) {
 						console.error(`Task "${taskName}" not found (referenced by case "${name}")`)
-						conn.close()
+						await cleanup()
 						process.exit(1)
 					}
 
@@ -90,15 +215,15 @@ export const runCommand = new Command('run')
 
 					const result = await replayTask(
 						conn,
-						session.sessionId,
+						sessionId,
 						taskFile,
 						{},
-						{ fallback: opts.fallback, verbose: opts.verbose ?? true },
+						{ fallback: opts.fallback, verbose: opts.verbose ?? true, page: browserSession.page },
 					)
 
 					if (!result.success) {
 						console.error(`Task "${taskName}" failed: ${result.error}`)
-						conn.close()
+						await cleanup()
 						process.exit(1)
 					}
 
@@ -107,16 +232,17 @@ export const runCommand = new Command('run')
 				}
 
 				console.log('All tasks completed successfully.')
-				conn.close()
+				await cleanup()
 				return
 			}
 
 			console.error(`No task or case named "${name}" found.`)
 			console.error('Use `fisgon run --list` to see available tasks and cases.')
-			conn.close()
+			await cleanup()
 			process.exit(1)
 		} catch (err) {
 			console.error('Run failed:', err)
+			await cleanup()
 			process.exit(1)
 		}
 	})
