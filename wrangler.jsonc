@@ -5,7 +5,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "durable_objects": {
     "bindings": [
-      { "name": "FISGON_AGENT", "class_name": "FisgonAgent" }
+      { "name": "Fisgon", "class_name": "FisgonAgent" }
     ]
   },
   "migrations": [

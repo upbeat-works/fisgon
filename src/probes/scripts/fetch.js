@@ -1,5 +1,4 @@
 // Fetch probe — injected into the browser by Fisgon.
-// __FISGON_FETCH_PATTERNS__ is replaced at injection time with the actual patterns array.
 // __FISGON_EMIT__ is defined by the WebSocket bootstrap (see ws-bootstrap.js).
 ;(function () {
 	const patterns = __FISGON_FETCH_PATTERNS__

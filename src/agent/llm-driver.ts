@@ -10,6 +10,8 @@ export type TaskContext = {
 	sendBrowserCommand: (command: unknown) => Promise<unknown>
 	waitForTick: (timeoutMs: number) => Promise<Tick>
 	getEvents: () => ProbeEvent[]
+	appUrl: string
+	loginUrl?: string
 }
 
 const SYSTEM_PROMPT = `You are a browser automation agent. You control a real browser and can observe both client-side and server-side events.
@@ -139,9 +141,12 @@ export async function runTask(
 	ctx: TaskContext,
 	instruction: string,
 ): Promise<string> {
+	const appContext = [`App URL: ${ctx.appUrl}`]
+	if (ctx.loginUrl) appContext.push(`Login URL: ${ctx.loginUrl}`)
+
 	const result = await generateText({
 		model,
-		system: SYSTEM_PROMPT,
+		system: SYSTEM_PROMPT + `\n\n## App context\n\n${appContext.join('\n')}`,
 		prompt: instruction,
 		tools: createTools(ctx),
 		stopWhen: stepCountIs(30),

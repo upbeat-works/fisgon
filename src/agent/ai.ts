@@ -1,13 +1,10 @@
-import { createAiGateway } from 'ai-gateway-provider'
-import { createAnthropic } from 'ai-gateway-provider/providers/anthropic'
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { env } from 'cloudflare:workers'
 
-export const aiGateway = createAiGateway({
-	accountId: env.ACCOUNT_ID,
-	gateway: env.AI_GATEWAY,
+const gateway = createOpenAICompatible({
+	name: 'cf-ai-gateway',
+	baseURL: `https://gateway.ai.cloudflare.com/v1/${env.ACCOUNT_ID}/${env.AI_GATEWAY}/compat`,
 	apiKey: env.AI_GATEWAY_TOKEN,
 })
 
-const anthropic = createAnthropic()
-
-export const model = aiGateway(anthropic.chat('anthropic/claude-sonnet-4-5-20250929'))
+export const model = gateway.chatModel('anthropic/claude-haiku-4-5-20251001')

@@ -19,6 +19,7 @@ type ConnectionState = {
 	role: 'cli' | 'browser-probe' | 'server-probe'
 	sessionId: string | null
 	connectedAt: number
+	hasBrowser?: boolean
 }
 
 type SessionRuntime = {
@@ -90,18 +91,23 @@ export class FisgonAgent extends Agent<Cloudflare.Env, AgentState> {
 		const url = new URL(request!.url)
 		const role = (url.searchParams.get('role') ?? 'cli') as ConnectionState['role']
 		const sessionId = url.searchParams.get('sessionId')
+		const hasBrowser = url.searchParams.get('hasBrowser') === 'true'
 
 		connection.setState({
 			role,
 			sessionId,
 			connectedAt: Date.now(),
+			hasBrowser,
 		} satisfies ConnectionState)
 
 		if (role === 'cli' && sessionId) {
-			// Associate this CLI connection with its session runtime
-			const runtime = this.sessions.get(sessionId)
-			if (runtime) {
-				runtime.cliConnection = connection
+			try {
+				const runtime = this.requireRuntime(sessionId)
+				if (hasBrowser || !runtime.cliConnection) {
+					runtime.cliConnection = connection
+				}
+			} catch {
+				// Session may not exist (e.g. first connection before startSession)
 			}
 		}
 	}
@@ -114,6 +120,26 @@ export class FisgonAgent extends Agent<Cloudflare.Env, AgentState> {
 				runtime.cliConnection = null
 			}
 		}
+	}
+
+	// onRequest handles HTTP requests (e.g. from server probes via agentFetch)
+	async onRequest(request: Request): Promise<Response> {
+		this.initDb()
+
+		if (request.method === 'POST') {
+			try {
+				const body = await request.json() as { type: string; event?: ProbeEvent }
+
+				if (body.type === 'ingest-event' && body.event) {
+					this.ingestEvent(body.event)
+					return new Response('ok', { status: 200 })
+				}
+			} catch {
+				return new Response('bad request', { status: 400 })
+			}
+		}
+
+		return new Response('not found', { status: 404 })
 	}
 
 	// onMessage handles raw messages that aren't RPC:
@@ -480,19 +506,70 @@ export class FisgonAgent extends Agent<Cloudflare.Env, AgentState> {
 	// ── Helpers ─────────────────────────────────────────────────
 
 	private createTaskContext(runtime: SessionRuntime, sessionId: string): TaskContext {
+		const [session] = this.sql<SessionRow>`SELECT config FROM sessions WHERE id = ${sessionId}`
+		const config: FisgonConfig = JSON.parse(session.config)
+
 		return {
 			sendBrowserCommand: (command) =>
 				this.sendBrowserCommand(runtime, command as BrowserCommand),
 			waitForTick: (timeoutMs) => this.waitForTick(runtime, timeoutMs),
 			getEvents: () => this.getEvents(sessionId).events,
+			appUrl: config.url,
+			loginUrl: config.loginUrl,
 		}
 	}
 
 	private requireRuntime(sessionId: string): SessionRuntime {
-		const runtime = this.sessions.get(sessionId)
-		if (!runtime) {
+		const existing = this.sessions.get(sessionId)
+		if (existing) return existing
+
+		// Attempt to recover from SQLite (DO may have lost in-memory state)
+		this.initDb()
+		const rows = this.sql<SessionRow>`
+			SELECT * FROM sessions WHERE id = ${sessionId} AND status = 'active'
+		`
+		if (rows.length === 0) {
 			throw new Error(`Session not found: ${sessionId}`)
 		}
+
+		const session = rows[0]
+		const config: FisgonConfig = JSON.parse(session.config)
+		const runtime: SessionRuntime = {
+			tickDetector: new TickDetector({
+				silenceMs: config.tick?.silenceMs,
+				maxMs: config.tick?.maxMs,
+				onTick: (tick) => this.handleTickComplete(sessionId, tick),
+			}),
+			cliConnection: null,
+			browserMode: session.browser_mode as BrowserMode,
+			identity: config.identity ?? null,
+			pendingBrowserCallbacks: new Map(),
+			browserCommandId: 0,
+			pendingTickResolvers: [],
+		}
+		runtime.tickDetector.setSession(sessionId)
+		this.sessions.set(sessionId, runtime)
+
+		// Try to find the browser-owning CLI connection for this session.
+		// Prefer the connection with hasBrowser (from `fisgon start`).
+		let fallbackConn: Connection | null = null
+		for (const conn of this.getConnections()) {
+			const state = conn.state as ConnectionState | undefined
+			if (state?.role === 'cli' && state.sessionId === sessionId) {
+				if (state.hasBrowser) {
+					runtime.cliConnection = conn
+					fallbackConn = null
+					break
+				}
+				if (!fallbackConn) {
+					fallbackConn = conn
+				}
+			}
+		}
+		if (!runtime.cliConnection && fallbackConn) {
+			runtime.cliConnection = fallbackConn
+		}
+
 		return runtime
 	}
 

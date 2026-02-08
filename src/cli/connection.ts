@@ -8,6 +8,7 @@ type ConnectOptions = {
 	agent?: string // full remote URL, e.g. 'wss://fisgon.example.workers.dev'
 	env?: string // DO instance name, default 'default'
 	sessionId?: string // for reconnecting to an existing session
+	hasBrowser?: boolean // true for the `start` command's connection (owns the browser)
 }
 
 export type AgentConnection = {
@@ -31,6 +32,9 @@ export function connectToAgent(options: ConnectOptions): Promise<AgentConnection
 		const query: Record<string, string> = { role: 'cli' }
 		if (options.sessionId) {
 			query.sessionId = options.sessionId
+		}
+		if (options.hasBrowser) {
+			query.hasBrowser = 'true'
 		}
 
 		const clientOptions: AgentClientOptions<AgentState> = {
@@ -59,9 +63,15 @@ export function connectToAgent(options: ConnectOptions): Promise<AgentConnection
 			}
 		})
 
-		// Wait for the agent to send identity (connection is ready)
+		let settled = false
+
+		// Wait for the agent to send identity (connection is ready).
+		// PartySocket retries on transient WebSocket errors, so we don't
+		// reject on individual error events — only on ready-rejection or timeout.
 		client.ready
 			.then(() => {
+				if (settled) return
+				settled = true
 				const connection: AgentConnection = {
 					client,
 					call: client.call.bind(client),
@@ -74,10 +84,17 @@ export function connectToAgent(options: ConnectOptions): Promise<AgentConnection
 				}
 				resolve(connection)
 			})
-			.catch(reject)
+			.catch((err) => {
+				if (settled) return
+				settled = true
+				reject(err)
+			})
 
-		client.addEventListener('error', () => {
-			reject(new Error('Failed to connect to agent'))
-		})
+		setTimeout(() => {
+			if (settled) return
+			settled = true
+			client.close()
+			reject(new Error('Connection to agent timed out'))
+		}, 15000)
 	})
 }

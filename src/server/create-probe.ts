@@ -1,11 +1,10 @@
-import { AgentClient } from 'agents/client'
+import { agentFetch } from 'agents/client'
 
-import { type AgentState } from '../agent/session-state.js'
 import { type Probe, type ScopedProbe, type ProbeEvent } from '../core/types.js'
 import { parseSQL } from './sql-parser.js'
 
 type CreateProbeOptions = {
-	url: string // e.g. 'ws://localhost:9876' or 'wss://fisgon.example.workers.dev'
+	url: string // e.g. 'http://localhost:9876' or 'https://fisgon.example.workers.dev'
 	env?: string // DO instance name, e.g. 'staging', 'pr-123'. Default: 'default'
 }
 
@@ -17,36 +16,29 @@ const NOOP_SCOPED: ScopedProbe = {
 }
 
 export function createProbe(options: CreateProbeOptions): Probe {
-	const activeSessions = new Set<string>()
-
 	const parsedUrl = new URL(options.url)
 	const host = parsedUrl.host
-	const protocol = parsedUrl.protocol === 'wss:' ? 'wss' : 'ws'
 	const envName = options.env ?? 'default'
 
-	const client = new AgentClient<AgentState>({
-		agent: 'fisgon',
-		name: envName,
-		host,
-		protocol: protocol as 'ws' | 'wss',
-		query: { role: 'server-probe' },
-		onStateUpdate(state) {
-			// Agent broadcasts activeSessionIds whenever sessions start/stop
-			activeSessions.clear()
-			for (const id of state.activeSessionIds) {
-				activeSessions.add(id)
-			}
-		},
-	})
+	function sendEvent(event: ProbeEvent) {
+		agentFetch(
+			{ agent: 'fisgon', name: envName, host },
+			{
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ type: 'ingest-event', event }),
+			},
+		).catch(() => {})
+	}
 
 	return {
 		get active() {
-			return activeSessions.size > 0
+			// With fetch-based probe, we're always "active" — the agent will
+			// discard events for unknown sessions on its end.
+			return true
 		},
 
 		fromRequest(request) {
-			if (activeSessions.size === 0) return NOOP_SCOPED
-
 			// Read the fisgon cookie from the request
 			let cookieHeader: string | null = null
 
@@ -64,37 +56,29 @@ export function createProbe(options: CreateProbeOptions): Probe {
 			if (!cookieHeader) return NOOP_SCOPED
 
 			const sessionId = parseCookie(cookieHeader, 'fisgon')
-			if (!sessionId || !activeSessions.has(sessionId)) return NOOP_SCOPED
+			if (!sessionId) return NOOP_SCOPED
 
 			return {
 				active: true,
 				sessionId,
 				emit(event: Omit<ProbeEvent, 'sessionId'>) {
-					const fullEvent: ProbeEvent = { ...event, sessionId }
-					// Use RPC to push events to the agent
-					client.call('emitEvent', [fullEvent]).catch(() => {
-						// Silently drop if the call fails
-					})
+					sendEvent({ ...event, sessionId })
 				},
 				fromSQL(query: string, _params?: unknown[]) {
 					const parsed = parseSQL(query)
-					const fullEvent: ProbeEvent = {
+					sendEvent({
 						sessionId,
 						source: 'sql',
 						type: parsed.operation,
 						timestamp: Date.now(),
 						data: { table: parsed.table },
-					}
-					client.call('emitEvent', [fullEvent]).catch(() => {
-						// Silently drop if the call fails
 					})
 				},
 			}
 		},
 
 		disconnect() {
-			client.close()
-			activeSessions.clear()
+			// Nothing to close with fetch-based approach
 		},
 	}
 }

@@ -1,5 +1,4 @@
 // WebSocket bootstrap — injected first, defines __FISGON_EMIT__.
-// __FISGON_WS_URL__ and __FISGON_SESSION_ID__ are replaced at injection time.
 ;(function () {
 	let ws = null
 	const buffer = []

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { writeFileSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
 
@@ -57,26 +57,27 @@ export const startCommand = new Command('start')
 		// 1. In local mode, spawn wrangler dev for the agent
 		if (!isRemote) {
 			console.log('Starting Fisgon agent...')
-			const wranglerConfigPath = resolve(
-				import.meta.dirname,
-				'../../wrangler.jsonc',
-			)
+			const fisgonRoot = resolve(import.meta.dirname, '../../..')
+			const wranglerConfigPath = resolve(fisgonRoot, 'wrangler.jsonc')
+			const devVarsPath = resolve(fisgonRoot, '.dev.vars')
 
-			const wrangler = spawn(
-				'npx',
-				[
-					'wrangler',
-					'dev',
-					'--config',
-					wranglerConfigPath,
-					'--port',
-					String(effectivePort),
-				],
-				{
-					stdio: ['pipe', 'pipe', 'pipe'],
-					env: { ...process.env },
-				},
-			)
+			const wranglerArgs = [
+				'wrangler',
+				'dev',
+				'--config',
+				wranglerConfigPath,
+				'--port',
+				String(effectivePort),
+			]
+
+			if (existsSync(devVarsPath)) {
+				wranglerArgs.push('--env-file', devVarsPath)
+			}
+
+			const wrangler = spawn('npx', wranglerArgs, {
+				stdio: ['pipe', 'pipe', 'pipe'],
+				env: { ...process.env },
+			})
 
 			wranglerPid = wrangler.pid
 
@@ -155,19 +156,21 @@ export const startCommand = new Command('start')
 		const { sessionId } = startResult
 		console.log(`Session started: ${sessionId}`)
 
-		// Reconnect with sessionId so the agent associates this CLI connection
+		// Reconnect with sessionId so the agent associates this CLI connection.
+		// hasBrowser tells the agent this is the browser-owning connection,
+		// so it survives DO hibernation and is preferred during recovery.
 		conn.close()
 		conn = await connectToAgent({
 			port: isRemote ? undefined : effectivePort,
 			agent: agentUrl,
 			env: envName,
 			sessionId,
+			hasBrowser: true,
 		})
 
 		// 4. Launch local Playwright browser if in local browser mode
 		if (browserMode === 'local' && options.browser !== false) {
 			try {
-				// @ts-expect-error playwright may not be installed
 				const pw = (await import('playwright')) as {
 					chromium: {
 						launch(opts: {

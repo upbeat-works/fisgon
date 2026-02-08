@@ -24,7 +24,7 @@ export function createInjectableScript(
 
 	// WebSocket connection + __FISGON_EMIT__ function
 	parts.push(
-		WS_BOOTSTRAP.replace('__FISGON_WS_URL__', JSON.stringify(wsUrl)).replace(
+		WS_BOOTSTRAP.replaceAll('__FISGON_WS_URL__', JSON.stringify(wsUrl)).replaceAll(
 			'__FISGON_SESSION_ID__',
 			JSON.stringify(sessionId),
 		),
