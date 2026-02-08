@@ -16,13 +16,18 @@
     "build": "tsc && cp -r src/probes/scripts dist/probes/scripts",
     "dev": "tsc --watch",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "cf-typegen": "wrangler types"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.0",
+    "ai": "^6.0.0",
+    "ai-gateway-provider": "^3.0.0",
     "agents": "^0.3.10",
     "commander": "^13.1.0",
     "picomatch": "^4.0.2",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "zod": "^3.24.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250124.0",

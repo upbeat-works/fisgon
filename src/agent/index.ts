@@ -12,6 +12,7 @@ import {
 } from '../core/types.js'
 
 import { type BrowserCommand, type BrowserResult } from './browser-bridge.js'
+import { type TaskContext, runTask } from './llm-driver.js'
 import { type AgentState, type SessionRow, type EventRow, type TickRow, initialAgentState } from './session-state.js'
 
 type ConnectionState = {
@@ -225,46 +226,58 @@ export class FisgonAgent extends Agent<Cloudflare.Env, AgentState> {
 
 		const runtime = this.requireRuntime(sessionId)
 
-		const [session] = this.sql<SessionRow>`SELECT config FROM sessions WHERE id = ${sessionId}`
-		const config: FisgonConfig = JSON.parse(session.config)
+		if (asIdentity) {
+			const [session] = this.sql<SessionRow>`SELECT config FROM sessions WHERE id = ${sessionId}`
+			const config: FisgonConfig = JSON.parse(session.config)
 
-		// If --as is provided, log in first
-		// Session-level identity takes precedence over config-level identity
-		const identityMap = runtime.identity ?? config.identity
-		if (asIdentity && identityMap && config.loginUrl) {
+			const identityMap = runtime.identity ?? config.identity
+			if (!identityMap) {
+				throw new Error('No identities configured')
+			}
 			const creds = identityMap[asIdentity]
 			if (!creds) {
 				throw new Error(`Unknown identity: ${asIdentity}`)
 			}
-
-			await this.sendBrowserCommand(runtime, { type: 'browser-navigate', url: config.loginUrl })
-			const actions = await this.sendBrowserCommand(runtime, { type: 'browser-actions' }) as Action[]
-			const loginForm = actions.find((a) => a.elementType === 'form')
-
-			if (loginForm) {
-				await this.sendBrowserCommand(runtime, { type: 'browser-open', actionId: loginForm.id })
-				const sel = `[data-fisgon='${loginForm.id}']`
-				await this.sendBrowserCommand(runtime, {
-					type: 'browser-interact',
-					command: { action: 'type', selector: `${sel} input[name='email'], ${sel} input[type='email']`, value: creds.email },
-				})
-				await this.sendBrowserCommand(runtime, {
-					type: 'browser-interact',
-					command: { action: 'type', selector: `${sel} input[name='password'], ${sel} input[type='password']`, value: creds.password },
-				})
-				await this.sendBrowserCommand(runtime, {
-					type: 'browser-interact',
-					command: { action: 'click', selector: `${sel} button[type='submit'], ${sel} input[type='submit']` },
-				})
-
-				await this.waitForTick(runtime, 10000)
+			if (!config.loginUrl) {
+				throw new Error('No loginUrl configured')
 			}
+
+			const instruction = [
+				`Log in at ${config.loginUrl} using email ${creds.email} and password ${creds.password}.`,
+				`Then navigate to ${url}.`,
+				'Use server-side events to handle flows that require out-of-band verification',
+				'(e.g. magic links — the email content will appear as a probe event).',
+			].join(' ')
+
+			const ctx = this.createTaskContext(runtime, sessionId)
+			await runTask(ctx, instruction)
+
+			// Return the last tick after the LLM is done
+			const tick = await this.waitForTick(runtime, 10000).catch(() => ({
+				id: 0,
+				sessionId,
+				startedAt: Date.now(),
+				duration: 0,
+				events: [],
+			}))
+			return { tick }
 		}
 
 		await this.sendBrowserCommand(runtime, { type: 'browser-navigate', url })
 		const tick = await this.waitForTick(runtime, 10000)
 
 		return { tick }
+	}
+
+	@callable()
+	async performTask(sessionId: string, instruction: string): Promise<{ result: string }> {
+		this.initDb()
+
+		const runtime = this.requireRuntime(sessionId)
+		const ctx = this.createTaskContext(runtime, sessionId)
+		const result = await runTask(ctx, instruction)
+
+		return { result }
 	}
 
 	@callable()
@@ -465,6 +478,15 @@ export class FisgonAgent extends Agent<Cloudflare.Env, AgentState> {
 	}
 
 	// ── Helpers ─────────────────────────────────────────────────
+
+	private createTaskContext(runtime: SessionRuntime, sessionId: string): TaskContext {
+		return {
+			sendBrowserCommand: (command) =>
+				this.sendBrowserCommand(runtime, command as BrowserCommand),
+			waitForTick: (timeoutMs) => this.waitForTick(runtime, timeoutMs),
+			getEvents: () => this.getEvents(sessionId).events,
+		}
+	}
 
 	private requireRuntime(sessionId: string): SessionRuntime {
 		const runtime = this.sessions.get(sessionId)

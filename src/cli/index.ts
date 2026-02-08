@@ -2,6 +2,7 @@
 
 import { Command } from 'commander'
 import { actionsCommand } from './commands/actions.js'
+import { doCommand } from './commands/do.js'
 import { eventsCommand } from './commands/events.js'
 import { interactCommand } from './commands/interact.js'
 import { navigateCommand } from './commands/navigate.js'
@@ -25,5 +26,6 @@ program.addCommand(openCommand)
 program.addCommand(interactCommand)
 program.addCommand(tickCommand)
 program.addCommand(eventsCommand)
+program.addCommand(doCommand)
 
 program.parse()
