@@ -1,6 +1,6 @@
 import { Command } from 'commander'
 
-import { type AgentResponse, type Tick } from '../../core/types.js'
+import { type Tick } from '../../core/types.js'
 import { connectToAgent } from '../connection.js'
 import { getRunningSession } from '../session-file.js'
 
@@ -23,26 +23,21 @@ export const tickCommand = new Command('tick')
 				env: session.env,
 				sessionId: session.sessionId,
 			})
-			const result = await conn.request<AgentResponse & { tick: Tick }>(
-				{
-					type: 'tick',
-					sessionId: session.sessionId,
-					timeout,
-				},
-				timeout + 5000,
+			const result = await conn.call<{ tick: Tick }>(
+				'waitForNextTick',
+				[session.sessionId, timeout],
+				{ timeout: timeout + 5000 },
 			)
 
-			if (result.type === 'tick-complete') {
-				const tick = result.tick
+			const tick = result.tick
+			console.log(
+				`Tick #${tick.id} (${tick.duration}ms, ${tick.events.length} events):`,
+			)
+			for (const event of tick.events) {
 				console.log(
-					`Tick #${tick.id} (${tick.duration}ms, ${tick.events.length} events):`,
+					`  ${event.source}:${event.type}`,
+					JSON.stringify(event.data),
 				)
-				for (const event of tick.events) {
-					console.log(
-						`  ${event.source}:${event.type}`,
-						JSON.stringify(event.data),
-					)
-				}
 			}
 
 			conn.close()

@@ -1,6 +1,5 @@
 import { Command } from 'commander'
 
-import { type AgentResponse } from '../../core/types.js'
 import { connectToAgent } from '../connection.js'
 import { getRunningSession } from '../session-file.js'
 
@@ -21,15 +20,12 @@ export const openCommand = new Command('open')
 				env: session.env,
 				sessionId: session.sessionId,
 			})
-			const result = await conn.request<AgentResponse & { html: string }>({
-				type: 'open',
-				sessionId: session.sessionId,
-				actionId,
-			})
+			const result = await conn.call<{ html: string }>(
+				'openAction',
+				[session.sessionId, actionId],
+			)
 
-			if (result.type === 'open-result') {
-				console.log(result.html)
-			}
+			console.log(result.html)
 
 			conn.close()
 		} catch (err) {

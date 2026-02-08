@@ -1,6 +1,6 @@
 import { Command } from 'commander'
 
-import { type AgentResponse, type InteractCommand } from '../../core/types.js'
+import { type InteractCommand } from '../../core/types.js'
 import { connectToAgent } from '../connection.js'
 import { getRunningSession } from '../session-file.js'
 
@@ -47,15 +47,9 @@ export const interactCommand = new Command('interact')
 				env: session.env,
 				sessionId: session.sessionId,
 			})
-			const result = await conn.request<AgentResponse & { success: boolean }>({
-				type: 'interact',
-				sessionId: session.sessionId,
-				command,
-			})
+			await conn.call('interact', [session.sessionId, command])
 
-			if (result.type === 'interact-result' && result.success) {
-				console.log('OK')
-			}
+			console.log('OK')
 
 			conn.close()
 		} catch (err) {

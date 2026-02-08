@@ -1,6 +1,6 @@
 import { Command } from 'commander'
 
-import { type AgentResponse, type ProbeEvent } from '../../core/types.js'
+import { type ProbeEvent } from '../../core/types.js'
 import { connectToAgent } from '../connection.js'
 import { getRunningSession } from '../session-file.js'
 
@@ -20,25 +20,21 @@ export const eventsCommand = new Command('events')
 				env: session.env,
 				sessionId: session.sessionId,
 			})
-			const result = await conn.request<
-				AgentResponse & { events: ProbeEvent[] }
-			>({
-				type: 'events',
-				sessionId: session.sessionId,
-			})
+			const result = await conn.call<{ events: ProbeEvent[] }>(
+				'getEvents',
+				[session.sessionId],
+			)
 
-			if (result.type === 'events-result') {
-				if (result.events.length === 0) {
-					console.log('No events yet.')
-				} else {
-					for (const event of result.events) {
-						console.log(
-							`[${event.timestamp}ms] ${event.source}:${event.type}`,
-							JSON.stringify(event.data),
-						)
-					}
-					console.log(`\nTotal: ${result.events.length} events`)
+			if (result.events.length === 0) {
+				console.log('No events yet.')
+			} else {
+				for (const event of result.events) {
+					console.log(
+						`[${event.timestamp}ms] ${event.source}:${event.type}`,
+						JSON.stringify(event.data),
+					)
 				}
+				console.log(`\nTotal: ${result.events.length} events`)
 			}
 
 			conn.close()

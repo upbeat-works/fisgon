@@ -1,6 +1,8 @@
-import WebSocket from 'ws'
+import { AgentClient } from 'agents/client'
 
+import { type AgentState } from '../agent/session-state.js'
 import { type Probe, type ScopedProbe, type ProbeEvent } from '../core/types.js'
+import { parseSQL } from './sql-parser.js'
 
 type CreateProbeOptions = {
 	url: string // e.g. 'ws://localhost:9876' or 'wss://fisgon.example.workers.dev'
@@ -11,61 +13,31 @@ const NOOP_SCOPED: ScopedProbe = {
 	active: false,
 	sessionId: null,
 	emit() {},
+	fromSQL() {},
 }
 
 export function createProbe(options: CreateProbeOptions): Probe {
-	let ws: WebSocket | null = null
-	// Multiple sessions can be active concurrently — track all of them
 	const activeSessions = new Set<string>()
-	let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
+	const parsedUrl = new URL(options.url)
+	const host = parsedUrl.host
+	const protocol = parsedUrl.protocol === 'wss:' ? 'wss' : 'ws'
 	const envName = options.env ?? 'default'
 
-	function getWsUrl() {
-		const base = options.url.replace(/\/$/, '')
-		return `${base}/agents/fisgon/${envName}?role=server-probe`
-	}
-
-	function connect() {
-		try {
-			ws = new WebSocket(getWsUrl())
-
-			ws.on('open', () => {
-				// Wait for session-status from agent
-			})
-
-			ws.on('message', (data: WebSocket.RawData) => {
-				try {
-					const msg = JSON.parse(data.toString())
-					if (msg.type === 'session-status' && Array.isArray(msg.sessions)) {
-						// Full list of active sessions
-						activeSessions.clear()
-						for (const s of msg.sessions as Array<{ id: string; status: string }>) {
-							if (s.status === 'active') {
-								activeSessions.add(s.id)
-							}
-						}
-					}
-				} catch {
-					// Ignore malformed messages
-				}
-			})
-
-			ws.on('close', () => {
-				activeSessions.clear()
-				ws = null
-				reconnectTimer = setTimeout(connect, 2000)
-			})
-
-			ws.on('error', () => {
-				ws?.close()
-			})
-		} catch {
-			reconnectTimer = setTimeout(connect, 5000)
-		}
-	}
-
-	connect()
+	const client = new AgentClient<AgentState>({
+		agent: 'fisgon',
+		name: envName,
+		host,
+		protocol: protocol as 'ws' | 'wss',
+		query: { role: 'server-probe' },
+		onStateUpdate(state) {
+			// Agent broadcasts activeSessionIds whenever sessions start/stop
+			activeSessions.clear()
+			for (const id of state.activeSessionIds) {
+				activeSessions.add(id)
+			}
+		},
+	})
 
 	return {
 		get active() {
@@ -73,7 +45,7 @@ export function createProbe(options: CreateProbeOptions): Probe {
 		},
 
 		fromRequest(request) {
-			if (activeSessions.size === 0 || !ws) return NOOP_SCOPED
+			if (activeSessions.size === 0) return NOOP_SCOPED
 
 			// Read the fisgon cookie from the request
 			let cookieHeader: string | null = null
@@ -94,22 +66,34 @@ export function createProbe(options: CreateProbeOptions): Probe {
 			const sessionId = parseCookie(cookieHeader, 'fisgon')
 			if (!sessionId || !activeSessions.has(sessionId)) return NOOP_SCOPED
 
-			const wsRef = ws
 			return {
 				active: true,
 				sessionId,
 				emit(event: Omit<ProbeEvent, 'sessionId'>) {
-					if (wsRef?.readyState !== WebSocket.OPEN) return
 					const fullEvent: ProbeEvent = { ...event, sessionId }
-					wsRef.send(JSON.stringify({ type: 'event', event: fullEvent }))
+					// Use RPC to push events to the agent
+					client.call('emitEvent', [fullEvent]).catch(() => {
+						// Silently drop if the call fails
+					})
+				},
+				fromSQL(query: string, _params?: unknown[]) {
+					const parsed = parseSQL(query)
+					const fullEvent: ProbeEvent = {
+						sessionId,
+						source: 'sql',
+						type: parsed.operation,
+						timestamp: Date.now(),
+						data: { table: parsed.table },
+					}
+					client.call('emitEvent', [fullEvent]).catch(() => {
+						// Silently drop if the call fails
+					})
 				},
 			}
 		},
 
 		disconnect() {
-			if (reconnectTimer) clearTimeout(reconnectTimer)
-			ws?.close()
-			ws = null
+			client.close()
 			activeSessions.clear()
 		},
 	}

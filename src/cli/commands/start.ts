@@ -5,7 +5,8 @@ import { resolve, join } from 'node:path'
 
 import { Command } from 'commander'
 
-import { type AgentResponse } from '../../core/types.js'
+import { type IdentityConfig } from '../../core/types.js'
+import { createInjectableScript } from '../../probes/inject.js'
 import {
 	createBrowserHandler,
 	type PlaywrightBrowser,
@@ -20,6 +21,7 @@ export const startCommand = new Command('start')
 	.option('--env <name>', 'DO instance name (e.g. staging, pr-123)', 'default')
 	.option('--remote', 'Use remote browser (Browser Rendering) instead of local Playwright')
 	.option('--no-browser', 'Skip launching browser (browser commands will fail)')
+	.option('--identity <entries...>', 'Session identity entries: name:email:password (can specify multiple)')
 	.action(async (options) => {
 		const port = parseInt(options.port, 10)
 		const config = await loadConfig()
@@ -34,6 +36,21 @@ export const startCommand = new Command('start')
 		const effectivePort = config.port ?? port
 		const envName = options.env
 		const browserMode = options.remote ? 'remote' : 'local'
+
+		// Parse --identity entries (format: name:email:password)
+		let sessionIdentity: IdentityConfig | undefined
+		if (options.identity) {
+			sessionIdentity = {}
+			for (const entry of options.identity as string[]) {
+				const [name, email, ...passwordParts] = entry.split(':')
+				const password = passwordParts.join(':')
+				if (!name || !email || !password) {
+					console.error(`Invalid identity format: ${entry}. Use name:email:password`)
+					process.exit(1)
+				}
+				sessionIdentity[name] = { email, password }
+			}
+		}
 
 		let wranglerPid: number | undefined
 
@@ -129,19 +146,11 @@ export const startCommand = new Command('start')
 			process.exit(1)
 		}
 
-		// 3. Start session on the agent
-		const startResult = await conn.request<
-			AgentResponse & { sessionId: string }
-		>({
-			type: 'start-session',
-			config,
-			browserMode,
-		})
-
-		if (startResult.type !== 'session-started') {
-			console.error('Failed to start session:', startResult)
-			process.exit(1)
-		}
+		// 3. Start session on the agent via RPC
+		const startResult = await conn.call<{ sessionId: string }>(
+			'startSession',
+			[config, browserMode, sessionIdentity],
+		)
 
 		const { sessionId } = startResult
 		console.log(`Session started: ${sessionId}`)
@@ -180,8 +189,12 @@ export const startCommand = new Command('start')
 					},
 				])
 
-				// Register browser command handler
-				const handleBrowserCommand = createBrowserHandler(conn.ws, page)
+				// Inject browser probes (fetch, navigation, WS bootstrap)
+				const probeScript = createInjectableScript(config, sessionId)
+				await page.addInitScript(probeScript)
+
+				// Register browser command handler — sends results via AgentClient
+				const handleBrowserCommand = createBrowserHandler(conn.client, page)
 				conn.onBrowserCommand(handleBrowserCommand)
 
 				console.log(`Browser ready at ${config.url}`)

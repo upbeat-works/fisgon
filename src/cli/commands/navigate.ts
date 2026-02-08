@@ -1,6 +1,6 @@
 import { Command } from 'commander'
 
-import { type AgentResponse, type Tick } from '../../core/types.js'
+import { type Tick } from '../../core/types.js'
 import { connectToAgent } from '../connection.js'
 import { getRunningSession } from '../session-file.js'
 
@@ -22,27 +22,21 @@ export const navigateCommand = new Command('navigate')
 				env: session.env,
 				sessionId: session.sessionId,
 			})
-			const result = await conn.request<AgentResponse & { tick: Tick }>(
-				{
-					type: 'navigate',
-					sessionId: session.sessionId,
-					url,
-					as: options.as,
-				},
-				60000,
+			const result = await conn.call<{ tick: Tick }>(
+				'navigate',
+				[session.sessionId, url, options.as],
+				{ timeout: 60000 },
 			)
 
-			if (result.type === 'navigate-result') {
-				console.log(`Navigated to ${url}`)
+			console.log(`Navigated to ${url}`)
+			console.log(
+				`Tick #${result.tick.id}: ${result.tick.events.length} events (${result.tick.duration}ms)`,
+			)
+			for (const event of result.tick.events) {
 				console.log(
-					`Tick #${result.tick.id}: ${result.tick.events.length} events (${result.tick.duration}ms)`,
+					`  ${event.source}:${event.type}`,
+					JSON.stringify(event.data),
 				)
-				for (const event of result.tick.events) {
-					console.log(
-						`  ${event.source}:${event.type}`,
-						JSON.stringify(event.data),
-					)
-				}
 			}
 
 			conn.close()

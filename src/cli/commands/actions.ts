@@ -1,6 +1,6 @@
 import { Command } from 'commander'
 
-import { type AgentResponse, type Action } from '../../core/types.js'
+import { type Action } from '../../core/types.js'
 import { connectToAgent } from '../connection.js'
 import { getRunningSession } from '../session-file.js'
 
@@ -20,14 +20,12 @@ export const actionsCommand = new Command('actions')
 				env: session.env,
 				sessionId: session.sessionId,
 			})
-			const result = await conn.request<AgentResponse & { actions: Action[] }>({
-				type: 'actions',
-				sessionId: session.sessionId,
-			})
+			const result = await conn.call<{ actions: Action[] }>(
+				'getActions',
+				[session.sessionId],
+			)
 
-			if (result.type === 'actions-result') {
-				console.log(JSON.stringify(result.actions, null, 2))
-			}
+			console.log(JSON.stringify(result.actions, null, 2))
 
 			conn.close()
 		} catch (err) {

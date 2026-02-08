@@ -41,6 +41,7 @@ export type ScopedProbe = {
   active: boolean
   sessionId: string | null
   emit(event: Omit<ProbeEvent, 'sessionId'>): void
+  fromSQL(query: string, params?: unknown[]): void
 }
 
 export type Probe = {
@@ -80,32 +81,3 @@ export type FisgonConfig = {
   browserMode?: BrowserMode // default 'local'
 }
 
-// ── Agent protocol messages ────────────────────────────────────
-
-export type AgentMessage =
-  // From probes → agent
-  | { type: 'event'; event: ProbeEvent }
-  // From CLI → agent (session-scoped commands include sessionId)
-  | { type: 'start-session'; config: FisgonConfig; browserMode?: BrowserMode }
-  | { type: 'stop'; sessionId: string }
-  | { type: 'navigate'; sessionId: string; url: string; as?: string }
-  | { type: 'actions'; sessionId: string }
-  | { type: 'open'; sessionId: string; actionId: string }
-  | { type: 'interact'; sessionId: string; command: InteractCommand }
-  | { type: 'tick'; sessionId: string; timeout?: number }
-  | { type: 'events'; sessionId: string }
-  | { type: 'list-sessions' }
-
-// From agent → clients
-export type AgentResponse =
-  | { type: 'session-status'; sessions: Array<{ id: string; status: string }> }
-  | { type: 'session-started'; sessionId: string }
-  | { type: 'session-stopped' }
-  | { type: 'tick-complete'; tick: Tick }
-  | { type: 'actions-result'; actions: Action[] }
-  | { type: 'open-result'; html: string }
-  | { type: 'navigate-result'; tick: Tick }
-  | { type: 'interact-result'; success: boolean }
-  | { type: 'events-result'; events: ProbeEvent[] }
-  | { type: 'sessions-list'; sessions: Array<{ id: string; status: string; browserMode: string; createdAt: number }> }
-  | { type: 'error'; message: string }

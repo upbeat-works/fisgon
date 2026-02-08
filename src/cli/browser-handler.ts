@@ -2,14 +2,13 @@
 // When the agent needs to control the browser, it sends commands to the CLI,
 // which owns the Playwright browser instance.
 
-import type WebSocket from 'ws'
-
 import { type InteractCommand } from '../core/types.js'
 import { createActionScannerScript } from '../probes/action-scanner.js'
 
 export type PlaywrightPage = {
 	goto(url: string, options?: { waitUntil?: string }): Promise<unknown>
 	evaluate<T>(fn: string | (() => T)): Promise<T>
+	addInitScript(script: string): Promise<void>
 	type(selector: string, text: string): Promise<void>
 	click(selector: string): Promise<void>
 	selectOption(selector: string, value: string): Promise<unknown>
@@ -32,6 +31,10 @@ export type PlaywrightBrowser = {
 	close(): Promise<void>
 }
 
+type Sendable = {
+	send(data: string): void
+}
+
 type BrowserCommand = {
 	type: string
 	commandId: string
@@ -49,7 +52,7 @@ function isBrowserCommand(msg: unknown): msg is BrowserCommand {
 	)
 }
 
-export function createBrowserHandler(ws: WebSocket, page: PlaywrightPage) {
+export function createBrowserHandler(sender: Sendable, page: PlaywrightPage) {
 	return async (raw: unknown) => {
 		if (!isBrowserCommand(raw)) return
 
@@ -119,7 +122,7 @@ export function createBrowserHandler(ws: WebSocket, page: PlaywrightPage) {
 				}
 			}
 
-			ws.send(
+			sender.send(
 				JSON.stringify({
 					type: 'browser-result',
 					commandId,
@@ -128,7 +131,7 @@ export function createBrowserHandler(ws: WebSocket, page: PlaywrightPage) {
 				}),
 			)
 		} catch (err) {
-			ws.send(
+			sender.send(
 				JSON.stringify({
 					type: 'browser-result',
 					commandId,

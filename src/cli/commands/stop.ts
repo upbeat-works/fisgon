@@ -19,10 +19,7 @@ export const stopCommand = new Command('stop')
 				env: session.env,
 				sessionId: session.sessionId,
 			})
-			await conn.request({
-				type: 'stop',
-				sessionId: session.sessionId,
-			})
+			await conn.call('stopSession', [session.sessionId])
 			console.log('Session stopped')
 			conn.close()
 		} catch (err) {

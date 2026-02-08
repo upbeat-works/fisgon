@@ -27,11 +27,12 @@ export type TickRow = {
 	duration: number
 }
 
-// Minimal in-memory state — just tracks what's broadcasted to clients
+// Broadcasted to all connected clients (CLI, server probes) via onStateUpdate.
+// Server probes use activeSessionIds to know which cookies to match.
 export type AgentState = {
-	activeSessions: number
+	activeSessionIds: string[]
 }
 
 export const initialAgentState: AgentState = {
-	activeSessions: 0,
+	activeSessionIds: [],
 }
