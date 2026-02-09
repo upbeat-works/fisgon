@@ -13,7 +13,7 @@ import {
 } from '../core/types.js'
 
 import { type BrowserCommand, type BrowserResult } from './browser-bridge.js'
-import { type TaskContext, type StepLog, runTask, distillSteps } from './llm-driver.js'
+import { type TaskContext, type StepLog, runTask, distillSteps, matchTasks } from './llm-driver.js'
 import { type AgentState, type SessionRow, type EventRow, type TickRow, initialAgentState } from './session-state.js'
 
 type ConnectionState = {
@@ -319,6 +319,14 @@ export class FisgonAgent extends Agent<Cloudflare.Env, AgentState> {
 		this.requireRuntime(sessionId)
 		const task = await distillSteps(stepLogs, instruction, finalUrl)
 		return { task }
+	}
+
+	@callable()
+	async matchTasks(
+		instruction: string,
+		tasks: Array<{ name: string; description: string }>,
+	): Promise<{ tasks: string[] | null; remaining: string | null }> {
+		return matchTasks(instruction, tasks)
 	}
 
 	@callable()

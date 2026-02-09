@@ -231,6 +231,42 @@ const taskFileSchema = z.object({
 	}).nullable(),
 })
 
+const matchTasksSchema = z.object({
+	tasks: z.array(z.string()).nullable(),
+	remaining: z.string().nullable(),
+})
+
+export async function matchTasks(
+	instruction: string,
+	tasks: Array<{ name: string; description: string }>,
+): Promise<{ tasks: string[] | null; remaining: string | null }> {
+	const catalog = tasks.map((t) => `- ${t.name}: ${t.description}`).join('\n')
+
+	const result = await generateText({
+		model: structuredModel,
+		output: Output.object({ schema: matchTasksSchema }),
+		system: `You are a task planner. Given a user instruction and a catalog of saved tasks, determine which saved tasks (if any) should be run to fulfill the instruction, and what (if anything) remains after those tasks.
+
+Rules:
+- Only match tasks that clearly correspond to part of the instruction
+- Return task names in the order they should be executed
+- If no tasks match, return tasks: null
+- If the matched tasks fully cover the instruction, return remaining: null
+- If there is leftover work after the matched tasks, describe it in remaining as a concise instruction for a browser automation agent
+- Do NOT invent tasks — only return names from the catalog`,
+		prompt: `Instruction: ${instruction}
+
+Task catalog:
+${catalog}`,
+	})
+
+	const output = result.output as { tasks: string[] | null; remaining: string | null }
+	return {
+		tasks: output.tasks,
+		remaining: output.remaining,
+	}
+}
+
 export async function distillSteps(
 	stepLogs: StepLog[],
 	instruction: string,
