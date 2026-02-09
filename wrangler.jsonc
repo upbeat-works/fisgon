@@ -15,7 +15,6 @@
     "binding": "BROWSER"
   },
   "vars": {
-    "ACCOUNT_ID": "761909453e0f7ab0054e0466947f3ad0",
     "AI_GATEWAY": "fisgon"
   }
 }
