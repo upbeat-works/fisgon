@@ -1,5 +1,5 @@
 {
-  "name": "fisgon",
+  "name": "@upbeat-works/fisgon",
   "version": "0.1.0",
   "description": "Low-level primitives for LLM-driven application testing",
   "type": "module",
@@ -10,7 +10,7 @@
     "./adapters/prisma": "./dist/adapters/prisma.js"
   },
   "bin": {
-    "fisgon": "./dist/cli/index.js"
+    "fisgon": "dist/cli/index.js"
   },
   "scripts": {
     "build": "tsc && cp -r src/probes/scripts dist/probes/scripts",
