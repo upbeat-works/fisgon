@@ -1,0 +1,11 @@
+src/
+node_modules/
+.wrangler/
+.env
+.dev.vars
+.github/
+.fisgon/
+tsconfig.json
+eslint.config.js
+wrangler.jsonc
+worker-configuration.d.ts
