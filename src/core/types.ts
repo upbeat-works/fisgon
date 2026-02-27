@@ -79,5 +79,6 @@ export type FisgonConfig = {
   tick?: TickConfig
   port?: number           // default 9876 (local mode only)
   browserMode?: BrowserMode // default 'local'
+  wrangler?: string       // path to wrangler config (relative to cwd)
 }
 

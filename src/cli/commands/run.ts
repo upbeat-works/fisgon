@@ -1,6 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { type ChildProcess } from 'node:child_process'
 
 import { Command } from 'commander'
 
@@ -10,57 +8,7 @@ import { loadConfig } from '../config.js'
 import { connectToAgent, type AgentConnection } from '../connection.js'
 import { getRunningSession } from '../session-file.js'
 import { replayTask } from '../task-runner.js'
-
-function startWrangler(port: number): Promise<ChildProcess> {
-	return new Promise((resolve_, reject) => {
-		const fisgonRoot = resolve(import.meta.dirname, '../../..')
-		const wranglerConfigPath = resolve(fisgonRoot, 'wrangler.jsonc')
-		const devVarsPath = resolve(fisgonRoot, '.dev.vars')
-
-		const wranglerArgs = [
-			'wrangler',
-			'dev',
-			'--config',
-			wranglerConfigPath,
-			'--port',
-			String(port),
-		]
-
-		if (existsSync(devVarsPath)) {
-			wranglerArgs.push('--env-file', devVarsPath)
-		}
-
-		const wrangler = spawn('npx', wranglerArgs, {
-			stdio: ['pipe', 'pipe', 'pipe'],
-			env: { ...process.env },
-		})
-
-		const timeout = setTimeout(
-			() => reject(new Error('Wrangler startup timed out')),
-			30000,
-		)
-
-		const onReady = (data: Buffer) => {
-			if (data.toString().includes('Ready on')) {
-				clearTimeout(timeout)
-				resolve_(wrangler)
-			}
-		}
-
-		wrangler.stderr?.on('data', onReady)
-		wrangler.stdout?.on('data', onReady)
-
-		wrangler.on('error', (err) => {
-			clearTimeout(timeout)
-			reject(err)
-		})
-
-		wrangler.on('exit', (code) => {
-			clearTimeout(timeout)
-			if (code !== 0) reject(new Error(`Wrangler exited with code ${code}`))
-		})
-	})
-}
+import { startWrangler } from '../wrangler.js'
 
 export const runCommand = new Command('run')
 	.description('Replay a saved task or test case')
@@ -130,7 +78,7 @@ export const runCommand = new Command('run')
 				// No existing session — start wrangler and create a new session
 				if (!isRemote) {
 					if (opts.verbose) console.log('Starting Fisgon agent...')
-					wrangler = await startWrangler(port)
+					wrangler = await startWrangler({ port, wrangler: config.wrangler })
 					if (opts.verbose) console.log(`Agent running on port ${port}`)
 					// Give wrangler a moment to be fully ready
 					await new Promise((r) => setTimeout(r, 1000))

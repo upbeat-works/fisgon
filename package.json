@@ -6,8 +6,7 @@
   "exports": {
     ".": "./dist/index.js",
     "./server": "./dist/server.js",
-    "./adapters/drizzle": "./dist/adapters/drizzle.js",
-    "./adapters/prisma": "./dist/adapters/prisma.js"
+    "./agent": "./dist/agent/worker.js"
   },
   "bin": {
     "fisgon": "dist/cli/index.js"
@@ -46,14 +45,10 @@
     "wrangler": "^4.4.0"
   },
   "peerDependencies": {
-    "@prisma/client": ">=5.0.0",
-    "drizzle-orm": ">=0.30.0"
+    "wrangler": ">=4.0.0"
   },
   "peerDependenciesMeta": {
-    "drizzle-orm": {
-      "optional": true
-    },
-    "@prisma/client": {
+    "wrangler": {
       "optional": true
     }
   },

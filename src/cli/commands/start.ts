@@ -1,7 +1,6 @@
-import { spawn } from 'node:child_process'
-import { existsSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { resolve, join } from 'node:path'
+import { join } from 'node:path'
 
 import { Command } from 'commander'
 
@@ -10,6 +9,7 @@ import { createBrowserHandler } from '../browser-handler.js'
 import { launchBrowser } from '../browser-setup.js'
 import { loadConfig } from '../config.js'
 import { connectToAgent } from '../connection.js'
+import { startWrangler } from '../wrangler.js'
 
 export const startCommand = new Command('start')
 	.description('Start a Fisgon test session')
@@ -54,67 +54,19 @@ export const startCommand = new Command('start')
 		// 1. In local mode, spawn wrangler dev for the agent
 		if (!isRemote) {
 			console.log('Starting Fisgon agent...')
-			const fisgonRoot = resolve(import.meta.dirname, '../../..')
-			const wranglerConfigPath = resolve(fisgonRoot, 'wrangler.jsonc')
-			const devVarsPath = resolve(fisgonRoot, '.dev.vars')
 
-			const wranglerArgs = [
-				'wrangler',
-				'dev',
-				'--config',
-				wranglerConfigPath,
-				'--port',
-				String(effectivePort),
-			]
-
-			if (existsSync(devVarsPath)) {
-				wranglerArgs.push('--env-file', devVarsPath)
-			}
-
-			const wrangler = spawn('npx', wranglerArgs, {
-				stdio: ['pipe', 'pipe', 'pipe'],
-				env: { ...process.env },
-			})
-
-			wranglerPid = wrangler.pid
-
+			let wrangler
 			try {
-				await new Promise<void>((waitResolve, reject) => {
-					const timeout = setTimeout(
-						() => reject(new Error('Wrangler startup timed out')),
-						30000,
-					)
-
-					wrangler.stderr?.on('data', (data: Buffer) => {
-						if (data.toString().includes('Ready on')) {
-							clearTimeout(timeout)
-							waitResolve()
-						}
-					})
-
-					wrangler.stdout?.on('data', (data: Buffer) => {
-						if (data.toString().includes('Ready on')) {
-							clearTimeout(timeout)
-							waitResolve()
-						}
-					})
-
-					wrangler.on('error', (err) => {
-						clearTimeout(timeout)
-						reject(err)
-					})
-
-					wrangler.on('exit', (code) => {
-						clearTimeout(timeout)
-						if (code !== 0)
-							reject(new Error(`Wrangler exited with code ${code}`))
-					})
+				wrangler = await startWrangler({
+					port: effectivePort,
+					wrangler: config.wrangler,
 				})
 			} catch (err) {
 				console.error('Failed to start wrangler:', err)
 				process.exit(1)
 			}
 
+			wranglerPid = wrangler.pid
 			console.log(`Agent running on port ${effectivePort}`)
 
 			// Cleanup on exit
