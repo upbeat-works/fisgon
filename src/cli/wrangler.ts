@@ -3,6 +3,25 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 /**
+ * Kill a child process and its entire process tree.
+ * Uses negative PID to send the signal to the process group.
+ */
+export function killProcessTree(child: ChildProcess) {
+	if (!child.pid) return
+	try {
+		// Kill the entire process group (npx → node → wrangler)
+		process.kill(-child.pid, 'SIGTERM')
+	} catch {
+		// Process group may already be dead, try direct kill
+		try {
+			child.kill('SIGTERM')
+		} catch {
+			// Already dead
+		}
+	}
+}
+
+/**
  * Resolve the wrangler config file path.
  *
  * 1. Explicit path from config.wrangler (resolved relative to cwd)
@@ -74,6 +93,7 @@ export function startWrangler(opts: {
 
 		const wrangler = spawn('npx', wranglerArgs, {
 			stdio: ['pipe', 'pipe', 'pipe'],
+			detached: true,
 			env: { ...process.env },
 		})
 

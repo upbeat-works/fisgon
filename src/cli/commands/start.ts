@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs'
+import { writeFileSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -6,10 +6,10 @@ import { Command } from 'commander'
 
 import { type IdentityConfig } from '../../core/types.js'
 import { createBrowserHandler } from '../browser-handler.js'
-import { launchBrowser } from '../browser-setup.js'
+import { type BrowserSession, launchBrowser } from '../browser-setup.js'
 import { loadConfig } from '../config.js'
 import { connectToAgent } from '../connection.js'
-import { startWrangler } from '../wrangler.js'
+import { killProcessTree, startWrangler } from '../wrangler.js'
 
 export const startCommand = new Command('start')
 	.description('Start a Fisgon test session')
@@ -50,14 +50,46 @@ export const startCommand = new Command('start')
 		}
 
 		let wranglerPid: number | undefined
+		let wranglerProcess: ReturnType<typeof startWrangler> extends Promise<infer T> ? T : never
+		let browserSession: BrowserSession | undefined
+		let cleaningUp = false
+
+		const sessionFile = join(tmpdir(), 'fisgon.json')
+
+		// Centralized cleanup — kills wrangler tree + browser, removes session file
+		const cleanup = async () => {
+			if (cleaningUp) return
+			cleaningUp = true
+
+			if (browserSession) {
+				try { await browserSession.cleanup() } catch { /* already closed */ }
+			}
+			if (wranglerProcess) {
+				killProcessTree(wranglerProcess)
+			}
+			try { unlinkSync(sessionFile) } catch { /* may not exist */ }
+
+			process.exit(0)
+		}
+
+		// Register cleanup for all exit paths
+		process.on('SIGINT', cleanup)
+		process.on('SIGTERM', cleanup)
+		process.on('uncaughtException', (err) => {
+			console.error('Uncaught exception:', err)
+			cleanup()
+		})
+		process.on('unhandledRejection', (err) => {
+			console.error('Unhandled rejection:', err)
+			cleanup()
+		})
 
 		// 1. In local mode, spawn wrangler dev for the agent
 		if (!isRemote) {
 			console.log('Starting Fisgon agent...')
 
-			let wrangler
 			try {
-				wrangler = await startWrangler({
+				wranglerProcess = await startWrangler({
 					port: effectivePort,
 					wrangler: config.wrangler,
 				})
@@ -66,16 +98,8 @@ export const startCommand = new Command('start')
 				process.exit(1)
 			}
 
-			wranglerPid = wrangler.pid
+			wranglerPid = wranglerProcess.pid
 			console.log(`Agent running on port ${effectivePort}`)
-
-			// Cleanup on exit
-			const cleanup = () => {
-				wrangler.kill()
-				process.exit(0)
-			}
-			process.on('SIGINT', cleanup)
-			process.on('SIGTERM', cleanup)
 		} else {
 			console.log(`Connecting to remote agent: ${agentUrl}`)
 		}
@@ -93,7 +117,8 @@ export const startCommand = new Command('start')
 			})
 		} catch (err) {
 			console.error('Failed to connect to agent:', err)
-			process.exit(1)
+			await cleanup()
+			return
 		}
 
 		// 3. Start session on the agent via RPC
@@ -120,10 +145,10 @@ export const startCommand = new Command('start')
 		// 4. Launch local Playwright browser if in local browser mode
 		if (browserMode === 'local' && options.browser !== false) {
 			try {
-				const { page } = await launchBrowser(config, sessionId)
+				browserSession = await launchBrowser(config, sessionId)
 
 				// Register browser command handler — sends results via AgentClient
-				const handleBrowserCommand = createBrowserHandler(conn.client, page)
+				const handleBrowserCommand = createBrowserHandler(conn.client, browserSession.page)
 				conn.onBrowserCommand(handleBrowserCommand)
 
 				console.log(`Browser ready at ${config.url}`)
@@ -139,7 +164,7 @@ export const startCommand = new Command('start')
 
 		// Write session info so other commands can find it
 		writeFileSync(
-			join(tmpdir(), 'fisgon.json'),
+			sessionFile,
 			JSON.stringify({
 				port: effectivePort,
 				pid: process.pid,

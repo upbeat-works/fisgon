@@ -10,6 +10,7 @@ export type SessionInfo = {
 	sessionId: string
 	agent?: string // remote agent URL
 	env?: string // DO instance name
+	wranglerPid?: number
 }
 
 export function getRunningSession(): SessionInfo | null {
