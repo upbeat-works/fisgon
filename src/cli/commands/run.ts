@@ -2,13 +2,31 @@ import { type ChildProcess } from 'node:child_process'
 
 import { Command } from 'commander'
 
-import { readTaskFile, readCaseFile, listTasks, listCases } from '../../core/task-file.js'
+import { readTaskFile, readCaseFile, listTasks, listCases, type TaskFile } from '../../core/task-file.js'
 import { launchBrowser, type BrowserSession } from '../browser-setup.js'
 import { loadConfig } from '../config.js'
 import { connectToAgent, type AgentConnection } from '../connection.js'
 import { getRunningSession } from '../session-file.js'
 import { replayTask } from '../task-runner.js'
 import { startWrangler } from '../wrangler.js'
+
+function resolveDependencies(projectDir: string, task: TaskFile, seen = new Set<string>()): TaskFile[] {
+	if (!task.depends?.length) return []
+	const result: TaskFile[] = []
+	for (const depName of task.depends) {
+		if (seen.has(depName)) continue
+		seen.add(depName)
+		const dep = readTaskFile(projectDir, depName)
+		if (!dep) {
+			console.error(`Dependency "${depName}" not found (required by "${task.name}")`)
+			process.exit(1)
+		}
+		// Recurse: dep's own dependencies come first
+		result.push(...resolveDependencies(projectDir, dep, seen))
+		result.push(dep)
+	}
+	return result
+}
 
 export const runCommand = new Command('run')
 	.description('Replay a saved task or test case')
@@ -125,7 +143,31 @@ export const runCommand = new Command('run')
 			// 4. Run tasks
 			const task = readTaskFile(process.cwd(), name)
 			if (task) {
-				console.log(`Running task: ${task.name}`)
+				// Resolve dependency chain (standalone only — cases control their own ordering)
+				const deps = resolveDependencies(process.cwd(), task)
+				const totalSteps = deps.length + 1
+
+				if (deps.length > 0) {
+					for (let i = 0; i < deps.length; i++) {
+						console.log(`[${i + 1}/${totalSteps}] ${deps[i].name} (dependency)`)
+						const depResult = await replayTask(
+							conn,
+							sessionId,
+							deps[i],
+							{},
+							{ fallback: opts.fallback, verbose: opts.verbose ?? true, page: browserSession.page },
+						)
+						if (!depResult.success) {
+							console.error(`Dependency "${deps[i].name}" failed: ${depResult.error}`)
+							await cleanup()
+							process.exit(1)
+						}
+						console.log(`  done.`)
+						console.log()
+					}
+				}
+
+				console.log(`${deps.length > 0 ? `[${totalSteps}/${totalSteps}] ` : 'Running task: '}${task.name}`)
 				if (task.description) console.log(`  ${task.description}`)
 				console.log()
 

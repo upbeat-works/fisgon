@@ -17,6 +17,7 @@ export type TaskValidation = {
 export type TaskFile = {
 	name: string
 	description: string
+	depends?: string[]
 	params?: Record<string, string>
 	steps: TaskStep[]
 	validate?: TaskValidation
