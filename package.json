@@ -1,6 +1,6 @@
 {
   "name": "@upbeat-works/fisgon",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Low-level primitives for LLM-driven application testing",
   "type": "module",
   "exports": {
