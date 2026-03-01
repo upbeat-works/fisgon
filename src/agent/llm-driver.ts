@@ -194,18 +194,28 @@ const DISTILL_PROMPT = `You are analyzing a browser automation trace. Given the 
    - REMOVE all \`get_actions\`, \`open_action\`, and \`get_events\` calls — they are read-only discovery steps the LLM used to explore the page. They are not needed for replay.
 2. **Keep every interact step that matters** — clicks that switch views, type into fields, or submit forms. Look at the trace carefully: if a click changed the page (the next get_actions returned different results), it must be included.
 3. **Remove missteps**: failed clicks (errors in result), redundant retries, and steps that didn't contribute to the goal.
-4. **Use stable CSS selectors** — never use \`data-fisgon\` attributes (they are dynamically assigned and change between sessions). Never use \`:contains()\` (not valid CSS). Prefer: \`button[type="submit"]\`, \`input[name="email"]\`, \`a[href="..."]\`, \`role\` attributes, or \`nth-of-type\`. For text matching use Playwright's \`:has-text("...")\` pseudo-selector (e.g. \`button:has-text("Log In")\`).
-5. **Parameterize dynamic values**: emails, passwords, URLs that vary. Replace with \`{{paramName}}\` placeholders and list defaults in \`params\`.
-6. **Extract dynamic values** from step results: for values that are only known at runtime (like magic link URLs from email events), add \`extract\` on the step that produces them. The extract object maps variable names to expressions. Example: \`{"callbackUrl": "events[source=email].data.text | match(/http\\\\S+callback\\\\S+/)"}\`. The variable can then be used as \`{{callbackUrl}}\` in later steps.
-7. **Add validation** based on the final state (typically url_contains).
+4. **Suppress redundant wait_for_tick**: \`navigate\` and \`interact\` already return the tick with all events. Do NOT emit a \`wait_for_tick\` immediately after a \`navigate\` or \`interact\` — it is redundant. Only keep \`wait_for_tick\` when waiting for delayed/async events that arrive after the initial tick (e.g. background jobs, webhooks).
+5. **Stable selectors** — follow the Testing Library priority (most to least preferred):
+   1. **Role** — \`[role="button"]\`, \`[role="menuitem"]\`, \`button\`, \`a\`, \`input\` (implicit roles). Combine with text: \`button:has-text("Save")\`, \`[role="menuitem"]:has-text("Delete")\`
+   2. **Label/placeholder** — \`input[name="email"]\`, \`[aria-label="Search"]\`, \`[placeholder="Enter name"]\`
+   3. **Text content** — \`:has-text("...")\` for non-interactive elements like headings, paragraphs, table cells
+   4. **Semantic attributes** — \`img[alt="Logo"]\`, \`[title="..."]\`
+   5. **Test ID** — \`[data-testid="..."]\` as last resort when none of the above produce a stable selector
+   NEVER use \`data-fisgon\` attributes (dynamically assigned), database IDs in selectors (e.g. \`option[value="rd2mj..."]\`), or \`:contains()\` (not valid CSS).
+6. **Parameterize dynamic values**: emails, passwords, URLs that vary. Replace with \`{{param_name}}\` placeholders and add them to \`params\` with the recorded value as the default. Use \`snake_case\` for all param names. Defaults allow instant replay; callers can override via CLI args or test case config.
+7. **Auto-parameterize base_url**: the app's base URL is provided in the context. Replace ALL occurrences of it in navigate URLs and selectors with \`{{base_url}}\`. For example, \`http://localhost:5173/dashboard\` becomes \`{{base_url}}/dashboard\`.
+8. **Reuse existing param names**: if existing params from other tasks are provided in the context, reuse those exact names for the same concepts. Do not invent new names like \`baseUrl\`, \`signInUrl\`, or \`workspace_id\` when \`base_url\`, \`login_url\`, or \`team\` already exist.
+9. **Extract dynamic values** from step results: for values that are only known at runtime (like magic link URLs from email events), add \`extract\` on the step that produces them. The extract object maps variable names to expressions. Example: \`{"callback_url": "events[source=email].data.text | match(/http\\\\S+callback\\\\S+/)"}\`. The variable can then be used as \`{{callback_url}}\` in later steps.
+10. **Parameterize URLs using router events**: tick results include \`events[source=router]\` with \`data.pattern\`, \`data.params\`, and \`data.routeId\`. Use these to parameterize navigate steps. For example, if a navigate step produces a router event with \`pattern: "/:team/admin/products/:adminProductName/content"\` and \`params: {team: "abc", adminProductName: "my-product"}\`, replace the hardcoded URL with \`{{base_url}}/{{team}}/admin/products/{{admin_product_name}}/content\` and add the params with their recorded values as defaults in \`params\`. Convert camelCase route params to snake_case.
+11. **Add validation** based on the final state (typically url_contains).
 
 ## Output schema
 
 - name: short kebab-case identifier
 - description: what this task does
-- params: object of param names to default values (null if none)
-- steps: array of {tool, args, extract} — only navigate, interact, wait_for_tick
-- validate: {url_contains, url_matches, event_exists} (null fields for unused)
+- params: object of \`snake_case\` param names to recorded default values — OMIT if no params
+- steps: array of {tool, args} — only navigate, interact, wait_for_tick. Add \`extract\` only on steps that produce runtime values. OMIT null/empty fields.
+- validate: {url_contains, url_matches, event_exists} — OMIT null fields, OMIT validate entirely if no validation
 
 Tool args:
 - interact: {action: "click"|"type"|"select", selector: string, value?: string}
@@ -267,10 +277,26 @@ ${catalog}`,
 	}
 }
 
+function stripNulls(obj: unknown): unknown {
+	if (obj === null || obj === undefined) return undefined
+	if (Array.isArray(obj)) return obj.map(stripNulls).filter((v) => v !== undefined)
+	if (typeof obj === 'object') {
+		const result: Record<string, unknown> = {}
+		for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+			const stripped = stripNulls(value)
+			if (stripped !== undefined) result[key] = stripped
+		}
+		return Object.keys(result).length > 0 ? result : undefined
+	}
+	return obj
+}
+
 export async function distillSteps(
 	stepLogs: StepLog[],
 	instruction: string,
 	finalUrl: string,
+	appUrl: string,
+	existingParams?: Record<string, string>,
 ): Promise<TaskFile> {
 	const trace = stepLogs.map((log) =>
 		log.toolCalls.map((tc) => ({
@@ -280,17 +306,30 @@ export async function distillSteps(
 		})),
 	).flat()
 
+	const context: string[] = [
+		`Instruction: ${instruction}`,
+		`Final browser URL: ${finalUrl}`,
+		`App base URL: ${appUrl}`,
+	]
+
+	if (existingParams && Object.keys(existingParams).length > 0) {
+		context.push(`\nExisting params from other tasks (reuse these names for the same concepts):`)
+		for (const [name, defaultValue] of Object.entries(existingParams)) {
+			context.push(`  ${name}: ${defaultValue}`)
+		}
+	}
+
+	context.push(
+		`\nFull trace (${trace.length} tool calls):`,
+		JSON.stringify(trace, null, 2),
+	)
+
 	const result = await generateText({
 		model: structuredModel,
 		output: Output.object({ schema: taskFileSchema }),
 		system: DISTILL_PROMPT,
-		prompt: [
-			`Instruction: ${instruction}`,
-			`Final browser URL: ${finalUrl}`,
-			`\nFull trace (${trace.length} tool calls):`,
-			JSON.stringify(trace, null, 2),
-		].join('\n'),
+		prompt: context.join('\n'),
 	})
 
-	return result.output as TaskFile
+	return stripNulls(result.output) as TaskFile
 }

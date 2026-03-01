@@ -313,11 +313,13 @@ export class FisgonAgent extends Agent<Cloudflare.Env, AgentState> {
 		stepLogs: StepLog[],
 		instruction: string,
 		finalUrl: string,
+		existingParams?: Record<string, string>,
 	): Promise<{ task: TaskFile }> {
 		this.initDb()
-		// Verify session exists
 		this.requireRuntime(sessionId)
-		const task = await distillSteps(stepLogs, instruction, finalUrl)
+		const [session] = this.sql<SessionRow>`SELECT config FROM sessions WHERE id = ${sessionId}`
+		const config: FisgonConfig = JSON.parse(session.config)
+		const task = await distillSteps(stepLogs, instruction, finalUrl, config.url, existingParams)
 		return { task }
 	}
 

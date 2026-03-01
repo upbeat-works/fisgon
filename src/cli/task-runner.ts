@@ -254,7 +254,7 @@ export async function replayTask(
 	params: Record<string, string>,
 	options: ReplayOptions = {},
 ): Promise<ReplayResult> {
-	// Merge task defaults with provided params
+	// Merge task defaults with provided params (caller overrides)
 	const vars: Record<string, string> = { ...task.params, ...params }
 
 	for (let i = 0; i < task.steps.length; i++) {

@@ -1,7 +1,7 @@
 import { Command } from 'commander'
 
 import { type StepLog } from '../../agent/llm-driver.js'
-import { type TaskFile, readTaskFile, writeTaskFile, listTasks } from '../../core/task-file.js'
+import { type TaskFile, readTaskFile, writeTaskFile, listTasks, collectParams } from '../../core/task-file.js'
 import { connectToAgent } from '../connection.js'
 import { getRunningSession } from '../session-file.js'
 import { replayTask } from '../task-runner.js'
@@ -155,9 +155,10 @@ export const doCommand = new Command('do')
 						// Proceed without URL
 					}
 
+					const existingParams = collectParams(process.cwd())
 					const distilled = await conn.call<{ task: TaskFile }>(
 						'distillTask',
-						[session.sessionId, stepLogs, instruction, currentUrl],
+						[session.sessionId, stepLogs, instruction, currentUrl, existingParams],
 						{ timeout: 120000 },
 					)
 

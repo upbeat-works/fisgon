@@ -12,13 +12,13 @@ import { startWrangler } from '../wrangler.js'
 
 export const runCommand = new Command('run')
 	.description('Replay a saved task or test case')
-	.argument('<name>', 'Task or test case name')
+	.argument('[name]', 'Task or test case name')
 	.option('--fallback', 'Fall back to LLM if a step fails')
 	.option('--verbose', 'Print each step as it executes')
 	.option('--headless', 'Run browser without visible window')
 	.option('--list', 'List all saved tasks and cases')
 	.option('-p, --port <port>', 'Agent port (local mode)', '9876')
-	.action(async (name: string, opts: { fallback?: boolean; verbose?: boolean; headless?: boolean; list?: boolean; port: string }) => {
+	.action(async (name: string | undefined, opts: { fallback?: boolean; verbose?: boolean; headless?: boolean; list?: boolean; port: string }) => {
 		if (opts.list) {
 			const tasks = listTasks(process.cwd())
 			const cases = listCases(process.cwd())
@@ -34,6 +34,12 @@ export const runCommand = new Command('run')
 				console.log('No saved tasks or cases. Use `fisgon do --save-task <name>` to create one.')
 			}
 			return
+		}
+
+		if (!name) {
+			console.error('Missing task or case name. Usage: fisgon run <name>')
+			console.error('Use `fisgon run --list` to see available tasks and cases.')
+			process.exit(1)
 		}
 
 		const config = await loadConfig()

@@ -71,6 +71,19 @@ export function listTasks(projectDir: string): string[] {
 		.map((f) => f.replace(/\.yaml$/, ''))
 }
 
+export function collectParams(projectDir: string): Record<string, string> {
+	const params: Record<string, string> = {}
+	for (const name of listTasks(projectDir)) {
+		const task = readTaskFile(projectDir, name)
+		if (task?.params) {
+			for (const [key, value] of Object.entries(task.params)) {
+				if (!(key in params)) params[key] = value
+			}
+		}
+	}
+	return params
+}
+
 export function listCases(projectDir: string): string[] {
 	const dir = join(projectDir, CASES_DIR)
 	if (!existsSync(dir)) return []
