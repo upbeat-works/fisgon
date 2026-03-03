@@ -1,5 +1,6 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, execSync, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { resolve } from 'node:path'
 
 /**
@@ -70,6 +71,41 @@ export function resolveWranglerConfig(cwd: string, configPath?: string): string 
 }
 
 /**
+ * Check if a port is free. If not, kill whatever is holding it
+ * (likely a stale wrangler from a previous run).
+ */
+async function ensurePortFree(port: number): Promise<void> {
+	const isFree = await new Promise<boolean>((resolve_) => {
+		const server = createServer()
+		server.once('error', () => resolve_(false))
+		server.once('listening', () => {
+			server.close()
+			resolve_(true)
+		})
+		server.listen(port)
+	})
+
+	if (isFree) return
+
+	// Port is taken — find and kill the process holding it
+	try {
+		const output = execSync(`lsof -ti tcp:${port}`, { encoding: 'utf-8' })
+		const pids = output.trim().split('\n').filter(Boolean)
+		for (const pid of pids) {
+			try {
+				process.kill(parseInt(pid, 10), 'SIGTERM')
+			} catch { /* already dead */ }
+		}
+		// Wait briefly for port to be released
+		await new Promise((r) => setTimeout(r, 500))
+	} catch {
+		throw new Error(
+			`Port ${port} is in use and could not be freed. Kill the process manually or use a different port.`,
+		)
+	}
+}
+
+/**
  * Spawn `npx wrangler dev` and wait for "Ready on" output.
  * Returns the child process.
  */
@@ -81,7 +117,7 @@ export function startWrangler(opts: {
 	const cwd = opts.cwd ?? process.cwd()
 	const configPath = resolveWranglerConfig(cwd, opts.wrangler)
 
-	return new Promise((resolve_, reject) => {
+	return ensurePortFree(opts.port).then(() => new Promise((resolve_, reject) => {
 		const wranglerArgs = [
 			'wrangler',
 			'dev',
@@ -102,6 +138,8 @@ export function startWrangler(opts: {
 			30000,
 		)
 
+		const stderrChunks: string[] = []
+
 		const onReady = (data: Buffer) => {
 			if (data.toString().includes('Ready on')) {
 				clearTimeout(timeout)
@@ -109,7 +147,10 @@ export function startWrangler(opts: {
 			}
 		}
 
-		wrangler.stderr?.on('data', onReady)
+		wrangler.stderr?.on('data', (data: Buffer) => {
+			stderrChunks.push(data.toString())
+			onReady(data)
+		})
 		wrangler.stdout?.on('data', onReady)
 
 		wrangler.on('error', (err) => {
@@ -119,7 +160,11 @@ export function startWrangler(opts: {
 
 		wrangler.on('exit', (code) => {
 			clearTimeout(timeout)
-			if (code !== 0) reject(new Error(`Wrangler exited with code ${code}`))
+			if (code !== 0) {
+				const stderr = stderrChunks.join('').trim()
+				const detail = stderr ? `:\n${stderr}` : ''
+				reject(new Error(`Wrangler exited with code ${code}${detail}`))
+			}
 		})
-	})
+	}))
 }

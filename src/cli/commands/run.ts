@@ -8,7 +8,7 @@ import { loadConfig } from '../config.js'
 import { connectToAgent, type AgentConnection } from '../connection.js'
 import { getRunningSession } from '../session-file.js'
 import { replayTask } from '../task-runner.js'
-import { startWrangler } from '../wrangler.js'
+import { killProcessTree, startWrangler } from '../wrangler.js'
 
 function resolveDependencies(projectDir: string, task: TaskFile, seen = new Set<string>()): TaskFile[] {
 	if (!task.depends?.length) return []
@@ -73,7 +73,7 @@ export const runCommand = new Command('run')
 		const cleanup = async () => {
 			await browserSession?.cleanup()
 			conn?.close()
-			wrangler?.kill()
+			if (wrangler) killProcessTree(wrangler)
 		}
 
 		process.on('SIGINT', () => void cleanup().then(() => process.exit(0)))

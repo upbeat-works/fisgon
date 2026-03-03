@@ -34,8 +34,17 @@ export const doCommand = new Command('do')
 			process.exit(1)
 		}
 
+		let conn: Awaited<ReturnType<typeof connectToAgent>> | null = null
+
+		const cleanup = () => {
+			conn?.close()
+			process.exit(0)
+		}
+		process.on('SIGINT', cleanup)
+		process.on('SIGTERM', cleanup)
+
 		try {
-			const conn = await connectToAgent({
+			conn = await connectToAgent({
 				port: session.port,
 				agent: session.agent,
 				env: session.env,
